@@ -7,10 +7,17 @@ name = "searxng-bm25-reranker"
 dynamic = ["version"]
 description = "BM25 reranking plugin for SearXNG using zero-dependency sparse search"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Peng Ding", email = "pding.dp@foxmail.com" }]
 dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "complexipy>=5.2.0",
+    "ruff>=0.15.0",
+    "ty>=0.0.31",
+]
 
 [project.urls]
 Repository = "https://github.com/Oaklight/searxng-bm25-reranker"
@@ -21,5 +28,26 @@ version = { attr = "searxng_bm25_reranker.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.src]
+include = ["src"]
+
 [tool.ruff]
-line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "C901"]
+ignore = ["UP007", "E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"src/searxng_bm25_reranker/_vendor/*" = ["C901", "UP"]
+
+[tool.complexipy]
+paths = ["src"]
+max-complexity-allowed = 15
+exclude = ["src/searxng_bm25_reranker/_vendor"]

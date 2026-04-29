@@ -213,7 +213,9 @@ class SparseIndex:
         calibrated: bool = False,
     ) -> None:
         if variant not in ("bm25", "bm25l", "tfidf"):
-            raise ValueError(f"Unknown variant {variant!r}, expected 'bm25', 'bm25l', or 'tfidf'")
+            raise ValueError(
+                f"Unknown variant {variant!r}, expected 'bm25', 'bm25l', or 'tfidf'"
+            )
 
         self.variant = variant
         self.k1 = k1
@@ -232,7 +234,9 @@ class SparseIndex:
         self._docs: dict[str, _DocRecord] = {}
 
         # Inverted index: term -> {doc_id -> {field -> term_freq}}
-        self._index: dict[str, dict[str, dict[str, int]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        self._index: dict[str, dict[str, dict[str, int]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(int))
+        )
 
         # Document frequency: term -> number of documents containing it
         self._df: dict[str, int] = defaultdict(int)
@@ -281,7 +285,9 @@ class SparseIndex:
             ValueError: If ``doc_id`` already exists (use ``update`` instead).
         """
         if doc_id in self._docs:
-            raise ValueError(f"Document {doc_id!r} already exists, use update() instead")
+            raise ValueError(
+                f"Document {doc_id!r} already exists, use update() instead"
+            )
         self._insert(doc_id, content, metadata)
 
     def remove(self, doc_id: str) -> None:
@@ -352,7 +358,11 @@ class SparseIndex:
 
         # Apply metadata filters
         if filters:
-            scores = {doc_id: score for doc_id, score in scores.items() if self._match_filters(doc_id, filters)}
+            scores = {
+                doc_id: score
+                for doc_id, score in scores.items()
+                if self._match_filters(doc_id, filters)
+            }
 
         # Sort by score descending
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
@@ -424,7 +434,9 @@ class SparseIndex:
             all_scores.extend(s for s in scores.values() if s > 0)
 
         if len(all_scores) < 2:
-            raise RuntimeError(f"Not enough score samples for auto-calibration (got {len(all_scores)}, need >= 2)")
+            raise RuntimeError(
+                f"Not enough score samples for auto-calibration (got {len(all_scores)}, need >= 2)"
+            )
 
         self._beta = statistics.median(all_scores)
         stdev = statistics.stdev(all_scores)
@@ -565,7 +577,9 @@ class SparseIndex:
         field_weights: dict[str, float],
     ) -> float:
         """Compute weighted document length across fields."""
-        return sum(field_weights.get(fn, 1.0) * dl for fn, dl in doc.field_lengths.items())
+        return sum(
+            field_weights.get(fn, 1.0) * dl for fn, dl in doc.field_lengths.items()
+        )
 
     def _weighted_avg_doc_length(self, field_weights: dict[str, float]) -> float:
         """Compute weighted average document length across fields."""
@@ -583,7 +597,9 @@ class SparseIndex:
         if self.variant == "bm25l":
             ctf = weighted_tf / (1.0 - b + b * weighted_dl / weighted_avgdl)
             return ((k1 + 1.0) * (ctf + delta)) / (k1 + ctf + delta)
-        tf_norm = (weighted_tf * (k1 + 1.0)) / (weighted_tf + k1 * (1.0 - b + b * weighted_dl / weighted_avgdl))
+        tf_norm = (weighted_tf * (k1 + 1.0)) / (
+            weighted_tf + k1 * (1.0 - b + b * weighted_dl / weighted_avgdl)
+        )
         return tf_norm + delta
 
     def _calibrate_bm25_scores(
@@ -660,7 +676,9 @@ class SparseIndex:
             return 0.0
         return math.log(n / df) + 1.0
 
-    def _build_query_tfidf_vec(self, query_tokens: list[str], n: int) -> dict[str, float]:
+    def _build_query_tfidf_vec(
+        self, query_tokens: list[str], n: int
+    ) -> dict[str, float]:
         """Build TF-IDF weighted vector for query terms."""
         query_tf: dict[str, int] = defaultdict(int)
         for token in query_tokens:
@@ -715,7 +733,9 @@ class SparseIndex:
         scores: dict[str, float] = {}
         for doc_id in candidates:
             doc_vec = self._doc_tfidf_vec(doc_id, n, field_weights)
-            dot_product = sum(w * query_vec[t] for t, w in doc_vec.items() if t in query_vec)
+            dot_product = sum(
+                w * query_vec[t] for t, w in doc_vec.items() if t in query_vec
+            )
             doc_norm_sq = sum(w * w for w in doc_vec.values())
             if doc_norm_sq > 0 and dot_product > 0:
                 scores[doc_id] = dot_product / (query_norm * math.sqrt(doc_norm_sq))
@@ -755,7 +775,9 @@ class SparseIndex:
         for doc_id, doc in self._docs.items():
             docs_data[doc_id] = asdict(doc)
 
-        doc_terms_data: dict[str, list[str]] = {doc_id: sorted(terms) for doc_id, terms in self._doc_terms.items()}
+        doc_terms_data: dict[str, list[str]] = {
+            doc_id: sorted(terms) for doc_id, terms in self._doc_terms.items()
+        }
 
         return {
             "version": _VERSION,
@@ -960,11 +982,15 @@ class SparseIndex:
                 instance._docs[doc_id] = _DocRecord(
                     doc_id=doc_id,
                     field_lengths=json.loads(field_lengths_json),
-                    metadata=json.loads(metadata_json) if metadata_json is not None else None,
+                    metadata=json.loads(metadata_json)
+                    if metadata_json is not None
+                    else None,
                 )
 
             # Load inverted index and rebuild reverse index
-            for term, doc_id, field_tfs_json in cur.execute("SELECT term, doc_id, field_tfs FROM inverted_index"):
+            for term, doc_id, field_tfs_json in cur.execute(
+                "SELECT term, doc_id, field_tfs FROM inverted_index"
+            ):
                 field_tfs = json.loads(field_tfs_json)
                 for field_name, tf in field_tfs.items():
                     instance._index[term][doc_id][field_name] = tf
@@ -975,7 +1001,9 @@ class SparseIndex:
                 instance._df[term] = count
 
             # Load total field lengths
-            for field_name, total in cur.execute("SELECT field_name, total FROM field_lengths_total"):
+            for field_name, total in cur.execute(
+                "SELECT field_name, total FROM field_lengths_total"
+            ):
                 instance._total_field_lengths[field_name] = total
 
             return instance
@@ -989,7 +1017,9 @@ class SparseIndex:
         """Determine save format from explicit arg or file extension."""
         if format is not None:
             if format not in ("json", "sqlite"):
-                raise ValueError(f"Unknown format {format!r}, expected 'json' or 'sqlite'")
+                raise ValueError(
+                    f"Unknown format {format!r}, expected 'json' or 'sqlite'"
+                )
             return format
         if Path(path).suffix in (".db", ".sqlite", ".sqlite3"):
             return "sqlite"
@@ -1073,7 +1103,9 @@ def rrf(
     if k <= 0:
         raise ValueError(f"k must be positive, got {k}")
     if weights is not None and len(weights) != len(result_lists):
-        raise ValueError(f"weights length ({len(weights)}) must match number of result lists ({len(result_lists)})")
+        raise ValueError(
+            f"weights length ({len(weights)}) must match number of result lists ({len(result_lists)})"
+        )
 
     rrf_scores: dict[str, float] = {}
     best_meta: dict[str, dict[str, Any] | None] = {}
@@ -1095,7 +1127,10 @@ def rrf(
     if top_k is not None:
         ranked = ranked[:top_k]
 
-    return [Result(doc_id=did, score=score, metadata=best_meta[did]) for did, score in ranked]
+    return [
+        Result(doc_id=did, score=score, metadata=best_meta[did])
+        for did, score in ranked
+    ]
 
 
 def mmr(
@@ -1174,6 +1209,8 @@ def mmr(
                 best_idx = idx
 
         chosen = candidates.pop(best_idx)
-        selected.append(Result(doc_id=chosen.doc_id, score=best_mmr, metadata=chosen.metadata))
+        selected.append(
+            Result(doc_id=chosen.doc_id, score=best_mmr, metadata=chosen.metadata)
+        )
 
     return selected

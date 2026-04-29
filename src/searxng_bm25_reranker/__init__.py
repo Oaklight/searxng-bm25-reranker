@@ -30,7 +30,7 @@ class SXNGPlugin(Plugin):
 
     id = "bm25_reranker"
 
-    def __init__(self, plg_cfg: "PluginCfg") -> None:
+    def __init__(self, plg_cfg: PluginCfg) -> None:
         super().__init__(plg_cfg)
         self.info = PluginInfo(
             id=self.id,
@@ -39,7 +39,7 @@ class SXNGPlugin(Plugin):
             preference_section="general",
         )
 
-    def post_search(self, request: "SXNG_Request", search: "SearchWithPlugins") -> None:
+    def post_search(self, request: SXNG_Request, search: SearchWithPlugins) -> None:
         """Rerank results by BM25 relevance fused with original engine ranking.
 
         Accesses main_results_map before close() calculates scores,
@@ -59,7 +59,9 @@ class SXNGPlugin(Plugin):
         except Exception:
             logger.exception("BM25 reranking failed, keeping original order")
 
-        logger.debug("BM25 reranker processed %d results for: %s", len(results_map), query[:50])
+        logger.debug(
+            "BM25 reranker processed %d results for: %s", len(results_map), query[:50]
+        )
 
         return None
 
@@ -95,7 +97,10 @@ class SXNGPlugin(Plugin):
         bm25_results = idx.search(query, top_k=len(valid_indices))
 
         # Build engine ranking from original positions
-        engine_ranking = [SparseResult(doc_id=str(i), score=1.0 / (rank + 1)) for rank, i in enumerate(valid_indices)]
+        engine_ranking = [
+            SparseResult(doc_id=str(i), score=1.0 / (rank + 1))
+            for rank, i in enumerate(valid_indices)
+        ]
 
         # RRF fusion: combine engine ranking + BM25 ranking
         fused = rrf(engine_ranking, bm25_results, k=60)
