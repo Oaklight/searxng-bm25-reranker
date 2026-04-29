@@ -2,6 +2,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
 [![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
 
 [English](README.md) | **中文**
 
@@ -15,7 +16,7 @@
 - **RRF 融合排序** — 将 BM25 得分与引擎原始排名通过 Reciprocal Rank Fusion 融合，而非完全替代
 - **CJK 分词支持** — 内置零依赖的中日韩文字分词器（unigram + bigram），无需 jieba
 - **零外部依赖** — 核心 BM25 引擎来自 [zerodep/sparse_search](https://github.com/Oaklight/zerodep)，纯标准库实现
-- **即插即用** — 标准 SearXNG 外部插件，volume mount 或 pip install 均可
+- **即插即用** — 标准 SearXNG 外部插件，Docker 镜像或 pip install 均可
 
 ## 工作原理
 
@@ -35,27 +36,45 @@
 
 ## 安装
 
-### 方式一：Volume Mount（推荐用于快速部署）
+### 方式一：预构建 Docker 镜像（推荐）
 
-1. 将插件代码放到服务器：
-
-```bash
-git clone https://github.com/Oaklight/searxng-bm25-reranker.git
-cp -r searxng-bm25-reranker/src/searxng_bm25_reranker /path/to/plugins/
-```
-
-2. 修改 `compose.yaml`：
+使用 Docker Hub 上的预构建镜像，跟踪 `searxng/searxng:latest` 并预装插件：
 
 ```yaml
 services:
   searxng:
-    volumes:
-      - /path/to/plugins:/usr/local/searxng/plugins:ro
-    environment:
-      - PYTHONPATH=/usr/local/searxng/plugins
+    image: oaklight/searxng:latest
+    # ... 其余配置
 ```
 
-3. 在 `settings.yml` 中注册插件：
+### 方式二：Docker Compose 内联构建
+
+无需单独 Dockerfile，直接在 `compose.yaml` 中添加插件：
+
+```yaml
+services:
+  searxng:
+    build:
+      dockerfile_inline: |
+        FROM searxng/searxng:latest
+        RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
+            /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
+            /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+    # ... 其余配置
+```
+
+### 方式三：自定义 Dockerfile
+
+```dockerfile
+FROM searxng/searxng:latest
+RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
+    /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
+    /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+```
+
+### 注册插件
+
+以上所有方式均需在 `settings.yml` 中注册插件：
 
 ```yaml
 plugins:
@@ -63,20 +82,11 @@ plugins:
     active: true
 ```
 
-4. 重启容器：
+然后启动或重启容器：
 
 ```bash
-docker compose restart searxng
+docker compose up -d
 ```
-
-### 方式二：pip 安装（适合自定义镜像）
-
-```dockerfile
-FROM searxng/searxng:latest
-RUN pip install --no-cache-dir searxng-bm25-reranker
-```
-
-同样需要在 `settings.yml` 中注册插件。
 
 ## 配置
 

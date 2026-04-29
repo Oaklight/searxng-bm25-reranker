@@ -2,6 +2,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
 [![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
 
 **English** | [中文](README_zh.md)
 
@@ -15,7 +16,7 @@ An external SearXNG plugin that reranks search results using BM25 text relevance
 - **RRF Fusion Ranking** — Combines BM25 scores with original engine rankings via Reciprocal Rank Fusion, rather than replacing them
 - **CJK Tokenization** — Built-in zero-dependency CJK tokenizer (unigram + bigram), no jieba required
 - **Zero External Dependencies** — Core BM25 engine from [zerodep/sparse_search](https://github.com/Oaklight/zerodep), pure standard library
-- **Plug and Play** — Standard SearXNG external plugin, deployable via volume mount or pip install
+- **Plug and Play** — Standard SearXNG external plugin, deployable via Docker image or pip install
 
 ## How It Works
 
@@ -35,27 +36,45 @@ The plugin hooks into the `post_search` phase, after all engine results are coll
 
 ## Installation
 
-### Option 1: Volume Mount (Recommended for Quick Deployment)
+### Option 1: Pre-built Docker Image (Recommended)
 
-1. Clone and copy the plugin code to your server:
-
-```bash
-git clone https://github.com/Oaklight/searxng-bm25-reranker.git
-cp -r searxng-bm25-reranker/src/searxng_bm25_reranker /path/to/plugins/
-```
-
-2. Update `compose.yaml`:
+Use the pre-built image from Docker Hub, which tracks `searxng/searxng:latest` with the plugin pre-installed:
 
 ```yaml
 services:
   searxng:
-    volumes:
-      - /path/to/plugins:/usr/local/searxng/plugins:ro
-    environment:
-      - PYTHONPATH=/usr/local/searxng/plugins
+    image: oaklight/searxng:latest
+    # ... rest of your config
 ```
 
-3. Register the plugin in `settings.yml`:
+### Option 2: Inline Build in Docker Compose
+
+Add the plugin to your existing `compose.yaml` without a separate Dockerfile:
+
+```yaml
+services:
+  searxng:
+    build:
+      dockerfile_inline: |
+        FROM searxng/searxng:latest
+        RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
+            /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
+            /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+    # ... rest of your config
+```
+
+### Option 3: Custom Dockerfile
+
+```dockerfile
+FROM searxng/searxng:latest
+RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
+    /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
+    /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+```
+
+### Plugin Registration
+
+For all options, register the plugin in `settings.yml`:
 
 ```yaml
 plugins:
@@ -63,20 +82,11 @@ plugins:
     active: true
 ```
 
-4. Restart the container:
+Then start or restart the container:
 
 ```bash
-docker compose restart searxng
+docker compose up -d
 ```
-
-### Option 2: pip Install (For Custom Images)
-
-```dockerfile
-FROM searxng/searxng:latest
-RUN pip install --no-cache-dir searxng-bm25-reranker
-```
-
-You still need to register the plugin in `settings.yml`.
 
 ## Configuration
 
