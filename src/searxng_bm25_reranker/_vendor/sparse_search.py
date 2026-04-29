@@ -1,3 +1,10 @@
+# /// zerodep
+# version = "0.4.0"
+# deps = []
+# tier = "medium"
+# category = "text"
+# note = "Install/update via `zerodep add sparse_search`"
+# ///
 """Zero-dependency sparse text search with BM25 family and TF-IDF ranking.
 
 Part of zerodep: https://github.com/Oaklight/zerodep
@@ -435,7 +442,8 @@ class SparseIndex:
 
         if len(all_scores) < 2:
             raise RuntimeError(
-                f"Not enough score samples for auto-calibration (got {len(all_scores)}, need >= 2)"
+                "Not enough score samples for auto-calibration "
+                f"(got {len(all_scores)}, need >= 2)"
             )
 
         self._beta = statistics.median(all_scores)
@@ -918,7 +926,8 @@ class SparseIndex:
             # Docs
             for doc_id, doc in self._docs.items():
                 cur.execute(
-                    "INSERT INTO docs (doc_id, field_lengths, metadata) VALUES (?, ?, ?)",
+                    "INSERT INTO docs (doc_id, field_lengths, metadata)"
+                    " VALUES (?, ?, ?)",
                     (
                         doc_id,
                         json.dumps(doc.field_lengths),
@@ -930,7 +939,9 @@ class SparseIndex:
             for term, postings in self._index.items():
                 for doc_id, field_tfs in postings.items():
                     cur.execute(
-                        "INSERT INTO inverted_index (term, doc_id, field_tfs) VALUES (?, ?, ?)",
+                        "INSERT INTO inverted_index"
+                        " (term, doc_id, field_tfs)"
+                        " VALUES (?, ?, ?)",
                         (term, doc_id, json.dumps(dict(field_tfs))),
                     )
 
@@ -1104,7 +1115,8 @@ def rrf(
         raise ValueError(f"k must be positive, got {k}")
     if weights is not None and len(weights) != len(result_lists):
         raise ValueError(
-            f"weights length ({len(weights)}) must match number of result lists ({len(result_lists)})"
+            f"weights length ({len(weights)}) must match "
+            f"number of result lists ({len(result_lists)})"
         )
 
     rrf_scores: dict[str, float] = {}
