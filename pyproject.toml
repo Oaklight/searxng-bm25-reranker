@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "searxng-bm25-reranker"
 dynamic = ["version"]
 description = "BM25 reranking plugin for SearXNG using zero-dependency sparse search"
-readme = "README_en.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Peng Ding", email = "pding.dp@foxmail.com" }]

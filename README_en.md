@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
 [![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
 
-**English** | [中文](README.md)
+**English** | [中文](README_zh.md)
 
 # SearXNG BM25 Reranker
 
