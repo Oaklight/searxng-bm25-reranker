@@ -9,16 +9,16 @@ from __future__ import annotations
 import logging
 import typing as t
 
-from searx.plugins import Plugin, PluginInfo
+from searx.plugins import Plugin, PluginInfo  # ty: ignore[unresolved-import]
 
 from ._tokenizer import cjk_tokenize
 from ._vendor.sparse_search import Result as SparseResult
 from ._vendor.sparse_search import SparseIndex, rrf
 
 if t.TYPE_CHECKING:
-    from searx.extended_types import SXNG_Request
-    from searx.plugins import PluginCfg
-    from searx.search import SearchWithPlugins
+    from searx.extended_types import SXNG_Request  # ty: ignore[unresolved-import]
+    from searx.plugins import PluginCfg  # ty: ignore[unresolved-import]
+    from searx.search import SearchWithPlugins  # ty: ignore[unresolved-import]
 
 __version__ = "0.1.0"
 

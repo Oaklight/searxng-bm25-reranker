@@ -33,6 +33,7 @@ python-version = "3.10"
 
 [tool.ty.src]
 include = ["src"]
+exclude = ["src/searxng_bm25_reranker/_vendor"]
 
 [tool.ruff]
 target-version = "py310"
