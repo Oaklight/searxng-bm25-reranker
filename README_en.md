@@ -44,12 +44,18 @@ Use the pre-built image from Docker Hub, which tracks `searxng/searxng:latest` w
 services:
   searxng:
     image: oaklight/searxng:latest
-    # ... rest of your config
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=https://search.example.com
 ```
 
 ### Option 2: Inline Build in Docker Compose
 
-Add the plugin to your existing `compose.yaml` without a separate Dockerfile:
+Build from the official SearXNG image with the plugin installed at compose time:
 
 ```yaml
 services:
@@ -60,21 +66,18 @@ services:
         RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
             /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
             /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
-    # ... rest of your config
-```
-
-### Option 3: Custom Dockerfile
-
-```dockerfile
-FROM searxng/searxng:latest
-RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
-    /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
-    /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=https://search.example.com
 ```
 
 ### Plugin Registration
 
-For all options, register the plugin in `settings.yml`:
+For both options, register the plugin in `settings.yml`:
 
 ```yaml
 plugins:

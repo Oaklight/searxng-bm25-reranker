@@ -44,12 +44,18 @@
 services:
   searxng:
     image: oaklight/searxng:latest
-    # ... 其余配置
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=https://search.example.com
 ```
 
 ### 方式二：Docker Compose 内联构建
 
-无需单独 Dockerfile，直接在 `compose.yaml` 中添加插件：
+在 compose 阶段从官方 SearXNG 镜像构建并安装插件：
 
 ```yaml
 services:
@@ -60,21 +66,18 @@ services:
         RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
             /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
             /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
-    # ... 其余配置
-```
-
-### 方式三：自定义 Dockerfile
-
-```dockerfile
-FROM searxng/searxng:latest
-RUN /usr/local/searxng/.venv/bin/python3 -m ensurepip && \
-    /usr/local/searxng/.venv/bin/python3 -m pip install --no-cache-dir searxng-bm25-reranker && \
-    /usr/local/searxng/.venv/bin/python3 -m pip uninstall -y pip
+    restart: always
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=https://search.example.com
 ```
 
 ### 注册插件
 
-以上所有方式均需在 `settings.yml` 中注册插件：
+以上两种方式均需在 `settings.yml` 中注册插件：
 
 ```yaml
 plugins:
