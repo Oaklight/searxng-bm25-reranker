@@ -55,32 +55,35 @@ def cjk_tokenize(text: str) -> list[str]:
 
     for match in _WORD_RE.finditer(text):
         word = match.group()
-        if not _has_cjk(word):
+        if _has_cjk(word):
+            _tokenize_mixed(word, tokens)
+        else:
             tokens.append(word)
-            continue
-
-        # Split mixed token into CJK and non-CJK segments
-        cjk_buf: list[str] = []
-        latin_buf: list[str] = []
-
-        for char in word:
-            if _is_cjk(char):
-                if latin_buf:
-                    tokens.append("".join(latin_buf))
-                    latin_buf.clear()
-                cjk_buf.append(char)
-            else:
-                if cjk_buf:
-                    _emit_cjk(cjk_buf, tokens)
-                    cjk_buf.clear()
-                latin_buf.append(char)
-
-        if latin_buf:
-            tokens.append("".join(latin_buf))
-        if cjk_buf:
-            _emit_cjk(cjk_buf, tokens)
 
     return tokens
+
+
+def _tokenize_mixed(word: str, tokens: list[str]) -> None:
+    """Split a mixed CJK/Latin word into segments and tokenize each."""
+    cjk_buf: list[str] = []
+    latin_buf: list[str] = []
+
+    for char in word:
+        if _is_cjk(char):
+            if latin_buf:
+                tokens.append("".join(latin_buf))
+                latin_buf.clear()
+            cjk_buf.append(char)
+        else:
+            if cjk_buf:
+                _emit_cjk(cjk_buf, tokens)
+                cjk_buf.clear()
+            latin_buf.append(char)
+
+    if latin_buf:
+        tokens.append("".join(latin_buf))
+    if cjk_buf:
+        _emit_cjk(cjk_buf, tokens)
 
 
 def _emit_cjk(chars: list[str], tokens: list[str]) -> None:
