@@ -15,6 +15,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "complexipy>=5.2.0",
+    "pre-commit>=4.0.0",
     "ruff>=0.15.0",
     "ty>=0.0.31",
 ]

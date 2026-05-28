@@ -17,9 +17,10 @@ repos:
         require_serial: true
         types: [python]
 
+  - repo: https://github.com/rohaquinlop/complexipy-pre-commit
+    rev: v5.1.0
+    hooks:
       - id: complexipy
-        name: complexipy (complexity check)
-        entry: complexipy src/searxng_bm25_reranker -e _vendor -mx 15
-        language: system
-        pass_filenames: false
-        always_run: true
+        files: ^src/searxng_bm25_reranker/
+        exclude: ^src/searxng_bm25_reranker/_vendor/
+        args: [-mx, "15"]
