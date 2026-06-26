@@ -14,10 +14,10 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "complexipy>=5.2.0",
+    "complexipy==5.6.1",
     "pre-commit>=4.0.0",
-    "ruff>=0.15.0",
-    "ty>=0.0.31",
+    "ruff==0.15.20",
+    "ty==0.0.54",
 ]
 
 [project.urls]
