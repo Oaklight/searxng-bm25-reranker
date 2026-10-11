@@ -14,7 +14,8 @@ An external SearXNG plugin that reranks search results using BM25 text relevance
 
 - **BM25F Multi-Field Weighting** — Title weight 2.0, content weight 1.0, prioritizing title-matching results
 - **RRF Fusion Ranking** — Combines BM25 scores with original engine rankings via Reciprocal Rank Fusion, rather than replacing them
-- **CJK Tokenization** — Built-in zero-dependency CJK tokenizer (unigram + bigram), no jieba required
+- **CJK Tokenization** — Built-in zero-dependency CJK tokenizer (unigram + bigram) covering Chinese ideographs and Japanese kana, no jieba required
+- **HTML-Aware Scoring** — Strips markup and decodes entities before tokenizing, so tag noise (`div`, `href`, `www`) never dilutes relevance
 - **Zero External Dependencies** — Core BM25 engine from [zerodep/sparse_search](https://github.com/Oaklight/zerodep), pure standard library
 - **Plug and Play** — Standard SearXNG external plugin, deployable via Docker image or pip install
 
@@ -27,7 +28,7 @@ Search request → Engines return results → [post_search hook]
                                                 ↓
                                    BM25 retrieval with original query
                                                 ↓
-                                   RRF fusion (engine ranking + BM25 ranking, k=60)
+                                   RRF fusion (engine ranking + BM25 ranking, k=20)
                                                 ↓
                                    Rewrite positions to influence scoring → Reranked results
 ```
@@ -93,16 +94,34 @@ docker compose up -d
 
 ## Configuration
 
-The plugin works out of the box with no additional configuration. Default parameters:
+The plugin works out of the box with no additional configuration. Every value below can be
+overridden per instance in `settings.yml`; all must be positive numbers.
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| BM25 variant | `bm25` | Standard Okapi BM25 |
-| k1 | `1.5` | Term frequency saturation |
-| b | `0.75` | Document length normalization |
-| title weight | `2.0` | BM25F weight for title field |
-| content weight | `1.0` | BM25F weight for content field |
-| RRF k | `60` | RRF fusion constant |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `title_weight` | `2.0` | BM25F weight for the title field |
+| `content_weight` | `1.0` | BM25F weight for the content field |
+| `rrf_k` | `20` | RRF fusion constant |
+| `engine_weight` | `1.0` | Weight of the original engine ranking in the fusion |
+| `bm25_weight` | `1.0` | Weight of the BM25 ranking in the fusion |
+
+Fixed and not exposed: Okapi BM25 with `k1=1.5`, `b=0.75`, `delta=0`.
+
+`rrf_k` defaults to 20 rather than the Cormack et al. value of 60 because that constant was
+tuned on retrieval runs with thousands of candidates, while a SearXNG page holds roughly 30
+results. At 60, the gap between rank 1 and rank 30 collapses to 1.48x and mutes the relevance
+signal.
+
+```yaml
+plugins:
+  searxng_bm25_reranker.SXNGPlugin:
+    active: true
+    rrf_k: 10
+    bm25_weight: 2.0
+```
+
+Raising `bm25_weight` lets text relevance outweigh the original engine order more aggressively;
+raising `engine_weight` does the opposite.
 
 ## Project Structure
 
@@ -112,7 +131,14 @@ src/searxng_bm25_reranker/
 ├── _tokenizer.py        # CJK-aware tokenizer (unigram + bigram)
 └── _vendor/
     └── sparse_search.py # BM25 engine from zerodep (vendored)
+
+tests/
+├── conftest.py          # SearXNG API stub (it is not a dependency)
+├── test_tokenizer.py
+└── test_rerank.py
 ```
+
+Run the tests with `pytest`.
 
 ## Acknowledgements
 
