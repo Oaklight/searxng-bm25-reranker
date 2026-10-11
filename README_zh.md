@@ -14,7 +14,8 @@
 
 - **BM25F 多字段加权** — 标题权重 2.0，正文权重 1.0，优先匹配标题命中的结果
 - **RRF 融合排序** — 将 BM25 得分与引擎原始排名通过 Reciprocal Rank Fusion 融合，而非完全替代
-- **CJK 分词支持** — 内置零依赖的中日韩文字分词器（unigram + bigram），无需 jieba
+- **CJK 分词支持** — 内置零依赖的 CJK 分词器（unigram + bigram），覆盖中日文汉字与日文假名，无需 jieba
+- **HTML 感知打分** — 打分前先剥离标签并还原实体，`div`、`href`、`www` 等标记噪声不会稀释相关性
 - **零外部依赖** — 核心 BM25 引擎来自 [zerodep/sparse_search](https://github.com/Oaklight/zerodep)，纯标准库实现
 - **即插即用** — 标准 SearXNG 外部插件，Docker 镜像或 pip install 均可
 
@@ -27,7 +28,7 @@
                                     ↓
                          用原始查询做 BM25 检索，得到相关性得分
                                     ↓
-                         RRF 融合（引擎排名 + BM25 排名，k=60）
+                         RRF 融合（引擎排名 + BM25 排名，k=20）
                                     ↓
                          改写 positions 影响最终评分 → 重排后的结果
 ```
@@ -161,8 +162,12 @@ src/searxng_bm25_reranker/
 
 tests/
 ├── conftest.py          # SearXNG API stub（SearXNG 不是依赖）
+├── test_rerank.py
+├── test_tokenizer.py
 └── test_url_priority.py
 ```
+
+运行测试：`pytest`。
 
 ## 致谢
 

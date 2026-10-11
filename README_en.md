@@ -14,7 +14,8 @@ An external SearXNG plugin that reranks search results using BM25 text relevance
 
 - **BM25F Multi-Field Weighting** — Title weight 2.0, content weight 1.0, prioritizing title-matching results
 - **RRF Fusion Ranking** — Combines BM25 scores with original engine rankings via Reciprocal Rank Fusion, rather than replacing them
-- **CJK Tokenization** — Built-in zero-dependency CJK tokenizer (unigram + bigram), no jieba required
+- **CJK Tokenization** — Built-in zero-dependency CJK tokenizer (unigram + bigram) covering Chinese ideographs and Japanese kana, no jieba required
+- **HTML-Aware Scoring** — Strips markup and decodes entities before tokenizing, so tag noise (`div`, `href`, `www`) never dilutes relevance
 - **Zero External Dependencies** — Core BM25 engine from [zerodep/sparse_search](https://github.com/Oaklight/zerodep), pure standard library
 - **Plug and Play** — Standard SearXNG external plugin, deployable via Docker image or pip install
 
@@ -27,7 +28,7 @@ Search request → Engines return results → [post_search hook]
                                                 ↓
                                    BM25 retrieval with original query
                                                 ↓
-                                   RRF fusion (engine ranking + BM25 ranking, k=60)
+                                   RRF fusion (engine ranking + BM25 ranking, k=20)
                                                 ↓
                                    Rewrite positions to influence scoring → Reranked results
 ```
@@ -172,8 +173,13 @@ src/searxng_bm25_reranker/
 
 tests/
 ├── conftest.py          # SearXNG API stub (it is not a dependency)
+├── conftest.py          # SearXNG API stub (it is not a dependency)
+├── test_rerank.py
+├── test_tokenizer.py
 └── test_url_priority.py
 ```
+
+Run the tests with `pytest`.
 
 ## Acknowledgements
 
