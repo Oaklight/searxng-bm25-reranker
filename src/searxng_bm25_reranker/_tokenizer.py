@@ -11,13 +11,20 @@ import re
 
 _WORD_RE = re.compile(r"[\w]+", re.UNICODE)
 
-# CJK Unified Ideographs ranges
+# CJK Unified Ideographs, kana and related ranges.
+# Hangul (0xAC00-0xD7AF) is deliberately absent: Korean separates words with
+# spaces, so whole-word tokens beat unigram+bigram there.
 _CJK_RANGES = (
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x20000, 0x2A6DF),  # CJK Unified Ideographs Extension B
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0x2E80, 0x2EFF),  # CJK Radicals Supplement
     (0x3000, 0x303F),  # CJK Symbols and Punctuation
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana
+    (0x31F0, 0x31FF),  # Katakana Phonetic Extensions
+    (0xFF66, 0xFF9D),  # Halfwidth Katakana
     (0x31C0, 0x31EF),  # CJK Strokes
     (0x3200, 0x32FF),  # Enclosed CJK Letters and Months
 )
@@ -42,6 +49,7 @@ def cjk_tokenize(text: str) -> list[str]:
 
     Example:
         "Redis缓存穿透" -> ["redis", "缓", "存", "穿", "透", "缓存", "存穿", "穿透"]
+        "とても簡単" -> ["と", "て", "も", "簡", "単", "簡単", "ても"]
         "python async" -> ["python", "async"]
 
     Args:
