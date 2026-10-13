@@ -7,6 +7,7 @@ by text relevance, with RRF fusion to preserve engine ranking signals.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import typing as t
 
@@ -169,7 +170,11 @@ def _compile_url_priority(raw: t.Any) -> list[tuple[re.Pattern[str], float]]:
     and 0.0 pushes them to the bottom.
 
     Malformed entries are skipped with a warning rather than raising: a
-    typo in settings.yml must not break search.
+    typo in settings.yml must not break search. That covers an invalid
+    regex, a multiplier that is not a number, a negative one, and NaN.
+    NaN is rejected explicitly -- it is not negative, so it would slip
+    through, and a single NaN poisons the sort into an arbitrary order.
+    Positive infinity is accepted; it simply pins the URL to the top.
 
     Args:
         raw: The raw ``url_priority`` value from settings.
@@ -196,6 +201,9 @@ def _compile_url_priority(raw: t.Any) -> list[tuple[re.Pattern[str], float]]:
                 multiplier,
                 pattern,
             )
+            continue
+        if math.isnan(value):
+            logger.warning("url_priority: ignoring NaN multiplier for %r", pattern)
             continue
         if value < 0:
             logger.warning(

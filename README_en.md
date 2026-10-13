@@ -132,6 +132,11 @@ An invalid regular expression, or a multiplier that is not a number or is
 negative, is skipped with a warning in the log. A typo therefore degrades to
 "no multiplier" instead of breaking search.
 
+Patterns are matched with `re.search`, so an unanchored pattern matches
+anywhere in the URL, query string included. Anchor with `$` as the examples do
+to mean the whole domain. The setting is read when the plugin loads, so changing
+it needs a restart.
+
 ## Project Structure
 
 ```
