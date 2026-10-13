@@ -14,7 +14,8 @@
 
 - **BM25F 多字段加权** — 标题权重 2.0，正文权重 1.0，优先匹配标题命中的结果
 - **RRF 融合排序** — 将 BM25 得分与引擎原始排名通过 Reciprocal Rank Fusion 融合，而非完全替代
-- **CJK 分词支持** — 内置零依赖的中日韩文字分词器（unigram + bigram），无需 jieba
+- **CJK 分词支持** — 内置零依赖的 CJK 分词器（unigram + bigram），覆盖中日文汉字与日文假名，无需 jieba
+- **HTML 感知打分** — 打分前先剥离标签并还原实体，`div`、`href`、`www` 等标记噪声不会稀释相关性
 - **零外部依赖** — 核心 BM25 引擎来自 [zerodep/sparse_search](https://github.com/Oaklight/zerodep)，纯标准库实现
 - **即插即用** — 标准 SearXNG 外部插件，Docker 镜像或 pip install 均可
 
@@ -27,7 +28,7 @@
                                     ↓
                          用原始查询做 BM25 检索，得到相关性得分
                                     ↓
-                         RRF 融合（引擎排名 + BM25 排名，k=60）
+                         RRF 融合（引擎排名 + BM25 排名，k=20）
                                     ↓
                          改写 positions 影响最终评分 → 重排后的结果
 ```
@@ -93,16 +94,32 @@ docker compose up -d
 
 ## 配置
 
-插件开箱即用，无需额外配置。当前使用以下默认参数：
+插件开箱即用，无需额外配置。以下参数均可在 `settings.yml` 中以插件 id 为键的顶层配置块按实例覆盖，取值须为不小于 1 的数字。
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| BM25 variant | `bm25` | 标准 Okapi BM25 |
-| k1 | `1.5` | 词频饱和参数 |
-| b | `0.75` | 文档长度归一化 |
-| title weight | `2.0` | 标题字段 BM25F 权重 |
-| content weight | `1.0` | 正文字段 BM25F 权重 |
-| RRF k | `60` | RRF 融合常数 |
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `title_weight` | `2.0` | 标题字段 BM25F 权重 |
+| `content_weight` | `1.0` | 正文字段 BM25F 权重 |
+| `rrf_k` | `20` | RRF 融合常数 |
+| `engine_weight` | `1.0` | 引擎原始排名在融合中的权重 |
+| `bm25_weight` | `1.0` | BM25 排名在融合中的权重 |
+
+固定且不暴露：Okapi BM25，`k1=1.5`、`b=0.75`、`delta=0`。
+
+`rrf_k` 默认为 20 而非 Cormack 等人的 60，因为 60 是在候选量达数千条的检索任务上调优的，
+而 SearXNG 单页结果只有约 30 条。在 k=60 时第 1 名与第 30 名的差距被压缩到 1.48 倍，
+相关性信号被削弱。
+
+```yaml
+bm25_reranker:
+  rrf_k: 10
+  bm25_weight: 2.0
+```
+
+该配置块位于顶层、以插件 id 为键，这是 SearXNG 对插件私有选项的约定（内置的 hostnames 插件即如此）。
+`PluginCfg` 只接受 `active`，把这些键放在 `plugins:` 下会让 SearXNG 启动失败，而不是回退到默认值。
+
+调高 `bm25_weight` 可让文本相关性更强地压过引擎原始排序；调高 `engine_weight` 则相反。
 
 ## 项目结构
 
@@ -112,7 +129,14 @@ src/searxng_bm25_reranker/
 ├── _tokenizer.py        # CJK-aware 分词器（unigram + bigram）
 └── _vendor/
     └── sparse_search.py # 来自 zerodep 的 BM25 引擎（vendored）
+
+tests/
+├── conftest.py          # SearXNG API 桩（它不是依赖项）
+├── test_tokenizer.py
+└── test_rerank.py
 ```
+
+运行测试：`pytest`。
 
 ## 致谢
 

@@ -24,3 +24,6 @@ jobs:
 
       - name: Run pre-commit checks
         uses: pre-commit/action@v3.0.1
+
+      - name: Run tests
+        run: python -m pytest -q

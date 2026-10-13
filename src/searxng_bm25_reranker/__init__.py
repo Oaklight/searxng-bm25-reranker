@@ -6,9 +6,12 @@ by text relevance, with RRF fusion to preserve engine ranking signals.
 
 from __future__ import annotations
 
+import html as html_lib
 import logging
+import re
 import typing as t
 
+from searx import settings  # ty: ignore[unresolved-import]
 from searx.plugins import Plugin, PluginInfo  # ty: ignore[unresolved-import]
 
 from ._tokenizer import cjk_tokenize
@@ -23,6 +26,43 @@ if t.TYPE_CHECKING:
 __version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
+
+# Only an actual opening tag: `<x`, `</x`. A bare `<` followed by punctuation or
+# space (e.g. `a < b and c > d`) must survive untouched.
+_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+# Tuning defaults. Each one can be overridden per instance in settings.yml via a
+# top-level block keyed by the plugin id, e.g.
+#   bm25_reranker: { rrf_k: 10 }
+# Values must be numbers >= 1.
+DEFAULTS: dict[str, float] = {
+    # RRF constant. The Cormack et al. default of 60 was tuned on retrieval runs
+    # of ~1000 candidates; SearXNG pages hold ~30, where 60 flattens rank 1
+    # against rank 30 to 1.48x and mutes the relevance signal.
+    "rrf_k": 20.0,
+    "engine_weight": 1.0,
+    "bm25_weight": 1.0,
+    "title_weight": 2.0,
+    "content_weight": 1.0,
+}
+
+
+def _plugin_settings(plugin_id: str) -> t.Mapping[str, t.Any]:
+    """Read a plugin's own settings block from SearXNG's settings.
+
+    Plugin-specific options do not live under ``plugins:`` -- that mapping only
+    carries ``active``, and ``PluginCfg`` is a dataclass that rejects unknown
+    keys. SearXNG's convention (see the in-tree hostnames plugin) is a top-level
+    block keyed by the plugin id.
+
+    Returns:
+        The settings mapping, or an empty mapping when the block is absent
+        or is not a mapping.
+    """
+    block = settings.get(plugin_id)
+    if not isinstance(block, t.Mapping):
+        return {}
+    return block
 
 
 class SXNGPlugin(Plugin):
@@ -39,33 +79,60 @@ class SXNGPlugin(Plugin):
             preference_section="general",
         )
 
+    def _setting(self, name: str) -> float:
+        """Read an optional numeric setting, falling back to the default.
+
+        Tunables live in a top-level ``bm25_reranker:`` block in settings.yml,
+        not under ``plugins:`` -- that mapping only carries ``active``, and
+        ``PluginCfg`` is a dataclass that rejects unknown keys (see
+        :func:`_plugin_settings`). A bad value must not take the reranker down.
+
+        Values below 1 are rejected: every tunable is a fusion constant or a
+        relative weight, and a sub-unit ``rrf_k`` truncates to 0 under ``int()``
+        and makes ``rrf()`` raise.
+        """
+        raw = _plugin_settings(self.id).get(name)
+        if raw is None:
+            return DEFAULTS[name]
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid %s=%r, using %s", name, raw, DEFAULTS[name])
+            return DEFAULTS[name]
+        if value < 1:
+            logger.warning(
+                "%s must be >= 1, got %r, using %s", name, raw, DEFAULTS[name]
+            )
+            return DEFAULTS[name]
+        return value
+
     def post_search(self, request: SXNG_Request, search: SearchWithPlugins) -> None:
         """Rerank results by BM25 relevance fused with original engine ranking.
 
-        Accesses main_results_map before close() calculates scores,
-        builds a temporary BM25F index, and rewrites positions to
-        influence the final scoring formula.
+        Every touch of the SearXNG API stays inside the try block: a SearXNG
+        upgrade must degrade to "original order", never break the search.
         """
-        results_map = search.result_container.main_results_map
-        if len(results_map) < 2:
-            return None
-
-        query = search.search_query.query
-        if not query or not query.strip():
-            return None
-
         try:
+            results_map = search.result_container.main_results_map
+            if len(results_map) < 2:
+                return None
+
+            query = search.search_query.query
+            if not query or not query.strip():
+                return None
+
             self._rerank(query, results_map)
+            logger.debug(
+                "BM25 reranker processed %d results for: %s",
+                len(results_map),
+                query[:50],
+            )
         except Exception:
             logger.exception("BM25 reranking failed, keeping original order")
 
-        logger.debug(
-            "BM25 reranker processed %d results for: %s", len(results_map), query[:50]
-        )
-
         return None
 
-    def _rerank(self, query: str, results_map: dict) -> None:
+    def _rerank(self, query: str, results_map: dict[str, t.Any]) -> None:
         """Core reranking logic.
 
         Args:
@@ -74,10 +141,15 @@ class SXNGPlugin(Plugin):
         """
         results = list(results_map.values())
 
-        # Build temporary BM25F index with title boost
+        # Temporary BM25F index with a title boost. delta=0 keeps this classic
+        # Okapi BM25, matching the documented default.
         idx = SparseIndex(
             variant="bm25",
-            field_weights={"title": 2.0, "content": 1.0},
+            delta=0.0,
+            field_weights={
+                "title": self._setting("title_weight"),
+                "content": self._setting("content_weight"),
+            },
             tokenize=cjk_tokenize,
         )
 
@@ -93,33 +165,65 @@ class SXNGPlugin(Plugin):
         if len(valid_indices) < 2:
             return
 
-        # BM25 retrieval
         bm25_results = idx.search(query, top_k=len(valid_indices))
 
-        # Build engine ranking from original positions
+        # Engine ranking mirrors the original insertion (engine) order.
         engine_ranking = [
             SparseResult(doc_id=str(i), score=1.0 / (rank + 1))
             for rank, i in enumerate(valid_indices)
         ]
 
-        # RRF fusion: combine engine ranking + BM25 ranking
-        fused = rrf(engine_ranking, bm25_results, k=60)
+        fused = rrf(
+            engine_ranking,
+            bm25_results,
+            k=int(self._setting("rrf_k")),
+            weights=[
+                self._setting("engine_weight"),
+                self._setting("bm25_weight"),
+            ],
+        )
 
-        # Rewrite positions to influence calculate_score()
-        for new_pos, fused_r in enumerate(fused, start=1):
-            idx_int = int(fused_r.doc_id)
-            r = results[idx_int]
-            # Preserve positions list length (multi-engine boost) but update values
-            n_positions = len(r["positions"]) if r["positions"] else 1
-            r["positions"] = [new_pos] * max(n_positions, 1)
+        _rewrite_positions(results, fused)
 
         logger.debug("BM25 reranked %d results for query: %s", len(fused), query[:50])
 
 
+def _rewrite_positions(results: list[t.Any], fused: list[SparseResult]) -> None:
+    """Give every result a fresh, contiguous position.
+
+    Results with no indexable text are absent from ``fused``. Leaving their raw
+    engine positions untouched would collide with the rewritten ones, so two
+    results could end up with the same position and therefore the same
+    ``calculate_score`` -- an arbitrary tie instead of a ranking.
+    """
+    new_positions = {int(f.doc_id): pos for pos, f in enumerate(fused, start=1)}
+    next_position = len(new_positions) + 1
+
+    for i, r in enumerate(results):
+        # Preserve list length: SearXNG multiplies weight by len(positions),
+        # which is how a result found by several engines keeps its boost.
+        old = r["positions"] or []
+        count = max(len(old), 1)
+        if i in new_positions:
+            r["positions"] = [new_positions[i]] * count
+        else:
+            r["positions"] = [next_position] * count
+            next_position += 1
+
+
 def _get_text(result: t.Any, field: str) -> str:
-    """Safely extract text field from a result object supporting [] access."""
+    """Extract a text field from an object supporting ``[]`` or attribute access.
+
+    SearXNG hands over raw engine HTML, so tags are dropped and entities
+    decoded; otherwise markup noise (div, href, www, com) drowns real terms
+    and inflates the term frequency of the ones that matter.
+    """
     try:
         val = result[field]
-    except (KeyError, TypeError):
+    except (KeyError, IndexError, TypeError):
         val = getattr(result, field, "")
-    return val or ""
+
+    if not isinstance(val, str):
+        return ""
+    val = _TAG_RE.sub(" ", val)
+    return html_lib.unescape(val)
