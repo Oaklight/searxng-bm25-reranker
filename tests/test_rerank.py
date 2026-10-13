@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from searx import settings
+from searx.plugins import PluginCfg
+
 from searxng_bm25_reranker import DEFAULTS, SXNGPlugin, _get_text
 
 
@@ -12,9 +15,16 @@ def make_result(title: str = "", content: str = "", n_positions: int = 1) -> dic
     return {"title": title, "content": content, "positions": [1] * n_positions}
 
 
-def make_plugin(**settings: object) -> SXNGPlugin:
-    plg_cfg = SimpleNamespace(**settings) if settings else SimpleNamespace()
-    return SXNGPlugin(plg_cfg)
+def make_plugin(**overrides: object) -> SXNGPlugin:
+    """Build a plugin with the given tunables in its settings block.
+
+    Tunables live in a top-level ``bm25_reranker:`` block in settings.yml, not
+    on the PluginCfg -- that dataclass only carries ``active``. Each call
+    replaces the block so tests cannot leak state into each other.
+    """
+    settings.clear()
+    settings["bm25_reranker"] = dict(overrides) if overrides else {}
+    return SXNGPlugin(PluginCfg())
 
 
 def make_search(results: dict, query: str) -> SimpleNamespace:
@@ -128,6 +138,17 @@ class TestHtmlStripping:
     def test_plain_text_is_untouched(self) -> None:
         assert _get_text({"content": "python & co"}, "content") == "python & co"
 
+    def test_comparisons_survive_tag_stripping(self) -> None:
+        """Regression: `"<" in val and ">" in val` ate plain text.
+
+        `a < b and c > d` came back as `a   d`. Only an actual tag shape is
+        removed now.
+        """
+        assert _get_text({"content": "a < b and c > d"}, "content") == "a < b and c > d"
+
+    def test_half_comparison_keeps_the_angle_bracket(self) -> None:
+        assert _get_text({"content": "x < 5"}, "content") == "x < 5"
+
 
 class TestSettings:
     def test_overrides_are_used(self) -> None:
@@ -142,6 +163,26 @@ class TestSettings:
         plugin = make_plugin(rrf_k="not-a-number", title_weight=-3)
         assert plugin._setting("rrf_k") == DEFAULTS["rrf_k"]
         assert plugin._setting("title_weight") == DEFAULTS["title_weight"]
+
+    def test_fractional_rrf_k_is_rejected(self) -> None:
+        """Regression: `int(self._setting("rrf_k"))` truncated 0.5 to 0.
+
+        ``rrf()`` then raised and the rerank was skipped. Anything below 1 is
+        rejected before it can be truncated.
+        """
+        plugin = make_plugin(rrf_k=0.5)
+        assert plugin._setting("rrf_k") == DEFAULTS["rrf_k"]
+
+    def test_tunables_read_the_plugin_settings_block(self) -> None:
+        """Regression: tunables must come from `settings[bm25_reranker]`.
+
+        ``PluginCfg`` only carries ``active``, and ``Plugin.__init__``
+        discards the object -- there is no ``self.plg_cfg`` on a real
+        instance.
+        """
+        plugin = make_plugin(engine_weight=3.0)
+        assert not hasattr(plugin, "plg_cfg")
+        assert plugin._setting("engine_weight") == 3.0
 
 
 class TestPostSearchRobustness:
