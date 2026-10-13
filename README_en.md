@@ -93,16 +93,38 @@ docker compose up -d
 
 ## Configuration
 
-The plugin works out of the box with no additional configuration. Default parameters:
+The plugin works out of the box with no additional configuration. Every value below can be
+overridden per instance in `settings.yml` in a top-level block keyed by the plugin id; all
+must be numbers `>= 1`.
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| BM25 variant | `bm25` | Standard Okapi BM25 |
-| k1 | `1.5` | Term frequency saturation |
-| b | `0.75` | Document length normalization |
-| title weight | `2.0` | BM25F weight for title field |
-| content weight | `1.0` | BM25F weight for content field |
-| RRF k | `60` | RRF fusion constant |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `title_weight` | `2.0` | BM25F weight for the title field |
+| `content_weight` | `1.0` | BM25F weight for the content field |
+| `rrf_k` | `20` | RRF fusion constant |
+| `engine_weight` | `1.0` | Weight of the original engine ranking in the fusion |
+| `bm25_weight` | `1.0` | Weight of the BM25 ranking in the fusion |
+
+Fixed and not exposed: Okapi BM25 with `k1=1.5`, `b=0.75`, `delta=0`.
+
+`rrf_k` defaults to 20 rather than the Cormack et al. value of 60 because that constant was
+tuned on retrieval runs with thousands of candidates, while a SearXNG page holds roughly 30
+results. At 60, the gap between rank 1 and rank 30 collapses to 1.48x and mutes the relevance
+signal.
+
+```yaml
+bm25_reranker:
+  rrf_k: 10
+  bm25_weight: 2.0
+```
+
+The block is top-level and keyed by the plugin id -- SearXNG's convention for
+plugin-specific options (the in-tree hostnames plugin works the same way).
+`PluginCfg` only carries `active`, so putting these keys under `plugins:`
+makes SearXNG fail to start rather than fall back.
+
+Raising `bm25_weight` lets text relevance outweigh the original engine order more aggressively;
+raising `engine_weight` does the opposite.
 
 ### URL priority
 

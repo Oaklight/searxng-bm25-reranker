@@ -24,15 +24,18 @@ if t.TYPE_CHECKING:
     from searx.plugins import PluginCfg  # ty: ignore[unresolved-import]
     from searx.search import SearchWithPlugins  # ty: ignore[unresolved-import]
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
 
-_TAG_RE = re.compile(r"<[^>]+>")
+# Only an actual opening tag: `<x`, `</x`. A bare `<` followed by punctuation or
+# space (e.g. `a < b and c > d`) must survive untouched.
+_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
-# Tuning defaults. Each one can be overridden per instance in settings.yml, e.g.
-#   plugins: { searxng_bm25_reranker.SXNGPlugin: { active: true, rrf_k: 10 } }
-# All values must be positive numbers.
+# Tuning defaults. Each one can be overridden per instance in settings.yml via a
+# top-level block keyed by the plugin id, e.g.
+#   bm25_reranker: { rrf_k: 10 }
+# Values must be numbers >= 1.
 DEFAULTS: dict[str, float] = {
     # RRF constant. The Cormack et al. default of 60 was tuned on retrieval runs
     # of ~1000 candidates; SearXNG pages hold ~30, where 60 flattens rank 1
@@ -65,13 +68,16 @@ class SXNGPlugin(Plugin):
     def _setting(self, name: str) -> float:
         """Read an optional numeric setting, falling back to the default.
 
-        SearXNG hands over a PluginCfg that may or may not carry the key, and
-        a bad value in settings.yml must not take the whole reranker down.
+        Tunables live in a top-level ``bm25_reranker:`` block in settings.yml,
+        not under ``plugins:`` -- that mapping only carries ``active``, and
+        ``PluginCfg`` is a dataclass that rejects unknown keys (see
+        :func:`_plugin_settings`). A bad value must not take the reranker down.
+
+        Values below 1 are rejected: every tunable is a fusion constant or a
+        relative weight, and a sub-unit ``rrf_k`` truncates to 0 under ``int()``
+        and makes ``rrf()`` raise.
         """
-        raw = getattr(self.plg_cfg, name, None)
-        if raw is None:
-            getter = getattr(self.plg_cfg, "get", None)
-            raw = getter(name) if callable(getter) else None
+        raw = _plugin_settings(self.id).get(name)
         if raw is None:
             return DEFAULTS[name]
         try:
@@ -79,9 +85,9 @@ class SXNGPlugin(Plugin):
         except (TypeError, ValueError):
             logger.warning("Invalid %s=%r, using %s", name, raw, DEFAULTS[name])
             return DEFAULTS[name]
-        if value <= 0:
+        if value < 1:
             logger.warning(
-                "%s must be positive, got %r, using %s", name, raw, DEFAULTS[name]
+                "%s must be >= 1, got %r, using %s", name, raw, DEFAULTS[name]
             )
             return DEFAULTS[name]
         return value
@@ -207,8 +213,7 @@ def _get_text(result: t.Any, field: str) -> str:
         val = getattr(result, field, "")
     if not isinstance(val, str):
         return ""
-    if "<" in val and ">" in val:
-        val = _TAG_RE.sub(" ", val)
+    val = _TAG_RE.sub(" ", val)
     return html_lib.unescape(val)
 
 
