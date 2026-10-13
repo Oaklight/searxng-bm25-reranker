@@ -104,6 +104,31 @@ docker compose up -d
 | content weight | `1.0` | 正文字段 BM25F 权重 |
 | RRF k | `60` | RRF 融合常数 |
 
+### URL 优先级
+
+`url_priority` 会对 URL 匹配正则的结果乘上一个系数，用来在不改排序代码的前提下
+提升或压低某个站点。系数小于 `1.0` 是降权，大于 `1.0` 是加权，`0.0` 直接压到底部。
+多条规则同时命中时会连乘。
+
+该配置块放在 `settings.yml` 的**顶层**，以插件 id 作为键名。它不能放在 `plugins:`
+下面，那一层只接受 `active`：
+
+```yaml
+bm25_reranker:
+  url_priority:
+    '(.*\.)?arxiv\.org$': 1.5
+    '(.*\.)?github\.com$': 1.2
+    '(.*\.)?pinterest\.com$': 0.1
+    '(.*\.)?facebook\.com$': 0.0
+
+plugins:
+  searxng_bm25_reranker.SXNGPlugin:
+    active: true
+```
+
+正则非法、系数不是数字或为负数时，该条目会被跳过并在日志里给出 warning。
+写错配置只会退化成"没有这条系数"，不会让搜索失败。
+
 ## 项目结构
 
 ```
@@ -112,6 +137,10 @@ src/searxng_bm25_reranker/
 ├── _tokenizer.py        # CJK-aware 分词器（unigram + bigram）
 └── _vendor/
     └── sparse_search.py # 来自 zerodep 的 BM25 引擎（vendored）
+
+tests/
+├── conftest.py          # SearXNG API stub（SearXNG 不是依赖）
+└── test_url_priority.py
 ```
 
 ## 致谢
