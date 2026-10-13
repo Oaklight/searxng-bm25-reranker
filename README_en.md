@@ -95,7 +95,8 @@ docker compose up -d
 ## Configuration
 
 The plugin works out of the box with no additional configuration. Every value below can be
-overridden per instance in `settings.yml`; all must be positive numbers.
+overridden per instance in `settings.yml` in a top-level block keyed by the plugin id; all
+must be numbers `>= 1`.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -113,12 +114,15 @@ results. At 60, the gap between rank 1 and rank 30 collapses to 1.48x and mutes 
 signal.
 
 ```yaml
-plugins:
-  searxng_bm25_reranker.SXNGPlugin:
-    active: true
-    rrf_k: 10
-    bm25_weight: 2.0
+bm25_reranker:
+  rrf_k: 10
+  bm25_weight: 2.0
 ```
+
+The block is top-level and keyed by the plugin id -- SearXNG's convention for
+plugin-specific options (the in-tree hostnames plugin works the same way).
+`PluginCfg` only carries `active`, so putting these keys under `plugins:`
+makes SearXNG fail to start rather than fall back.
 
 Raising `bm25_weight` lets text relevance outweigh the original engine order more aggressively;
 raising `engine_weight` does the opposite.

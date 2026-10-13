@@ -94,7 +94,7 @@ docker compose up -d
 
 ## 配置
 
-插件开箱即用，无需额外配置。以下参数均可在 `settings.yml` 中按实例覆盖，取值须为正数。
+插件开箱即用，无需额外配置。以下参数均可在 `settings.yml` 中以插件 id 为键的顶层配置块按实例覆盖，取值须为不小于 1 的数字。
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -111,12 +111,13 @@ docker compose up -d
 相关性信号被削弱。
 
 ```yaml
-plugins:
-  searxng_bm25_reranker.SXNGPlugin:
-    active: true
-    rrf_k: 10
-    bm25_weight: 2.0
+bm25_reranker:
+  rrf_k: 10
+  bm25_weight: 2.0
 ```
+
+该配置块位于顶层、以插件 id 为键，这是 SearXNG 对插件私有选项的约定（内置的 hostnames 插件即如此）。
+`PluginCfg` 只接受 `active`，把这些键放在 `plugins:` 下会让 SearXNG 启动失败，而不是回退到默认值。
 
 调高 `bm25_weight` 可让文本相关性更强地压过引擎原始排序；调高 `engine_weight` 则相反。
 
