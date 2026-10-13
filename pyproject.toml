@@ -16,6 +16,7 @@ dependencies = []
 dev = [
     "complexipy==5.6.1",
     "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
     "ruff==0.15.20",
     "ty==0.0.54",
 ]
@@ -28,6 +29,10 @@ version = { attr = "searxng_bm25_reranker.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ty.environment]
 python-version = "3.10"

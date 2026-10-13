@@ -104,6 +104,34 @@ The plugin works out of the box with no additional configuration. Default parame
 | content weight | `1.0` | BM25F weight for content field |
 | RRF k | `60` | RRF fusion constant |
 
+### URL priority
+
+`url_priority` multiplies the fused score of every result whose URL matches a
+regular expression, so a domain can be pushed up or down without touching the
+ranking code. A multiplier below `1.0` demotes, above `1.0` promotes, and `0.0`
+sends the result to the bottom. Every matching pattern applies, so overlapping
+entries compound.
+
+The block goes at the **top level** of `settings.yml`, keyed by the plugin id.
+It does not go under `plugins:`, which only accepts `active`:
+
+```yaml
+bm25_reranker:
+  url_priority:
+    '(.*\.)?arxiv\.org$': 1.5
+    '(.*\.)?github\.com$': 1.2
+    '(.*\.)?pinterest\.com$': 0.1
+    '(.*\.)?facebook\.com$': 0.0
+
+plugins:
+  searxng_bm25_reranker.SXNGPlugin:
+    active: true
+```
+
+An invalid regular expression, or a multiplier that is not a number or is
+negative, is skipped with a warning in the log. A typo therefore degrades to
+"no multiplier" instead of breaking search.
+
 ## Project Structure
 
 ```
@@ -112,6 +140,10 @@ src/searxng_bm25_reranker/
 ├── _tokenizer.py        # CJK-aware tokenizer (unigram + bigram)
 └── _vendor/
     └── sparse_search.py # BM25 engine from zerodep (vendored)
+
+tests/
+├── conftest.py          # SearXNG API stub (it is not a dependency)
+└── test_url_priority.py
 ```
 
 ## Acknowledgements
