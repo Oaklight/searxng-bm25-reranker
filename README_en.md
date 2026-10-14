@@ -129,8 +129,9 @@ plugins:
 ```
 
 An invalid regular expression, or a multiplier that is not a number or is
-negative, is skipped with a warning in the log. A typo therefore degrades to
-"no multiplier" instead of breaking search.
+negative, is skipped with a warning in the log. A YAML boolean counts as "not a
+number", so writing `false` does not switch a rule off; it is skipped too. A
+typo therefore degrades to "no multiplier" instead of breaking search.
 
 Patterns are matched with `re.search`, so an unanchored pattern matches
 anywhere in the URL, query string included. Anchor with `$` as the examples do
