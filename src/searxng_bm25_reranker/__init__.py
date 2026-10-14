@@ -171,10 +171,12 @@ def _compile_url_priority(raw: t.Any) -> list[tuple[re.Pattern[str], float]]:
 
     Malformed entries are skipped with a warning rather than raising: a
     typo in settings.yml must not break search. That covers an invalid
-    regex, a multiplier that is not a number, a negative one, and NaN.
-    NaN is rejected explicitly -- it is not negative, so it would slip
-    through, and a single NaN poisons the sort into an arbitrary order.
-    Positive infinity is accepted; it simply pins the URL to the top.
+    regex, a multiplier that is not a number, a negative one, NaN, and a
+    boolean. NaN and booleans are rejected explicitly because both would
+    otherwise slip through: NaN is not negative, and a bool is a legal
+    ``float()`` argument even though ``false`` reads as "switch this rule
+    off". A single NaN poisons the sort into an arbitrary order. Positive
+    infinity is accepted; it simply pins the URL to the top.
 
     Args:
         raw: The raw ``url_priority`` value from settings.
@@ -193,6 +195,17 @@ def _compile_url_priority(raw: t.Any) -> list[tuple[re.Pattern[str], float]]:
 
     compiled: list[tuple[re.Pattern[str], float]] = []
     for pattern, multiplier in raw.items():
+        if isinstance(multiplier, bool):
+            # bool is a legal float() argument, so it slips past the
+            # "not a number" contract. False is the one that bites: it
+            # becomes 0.0, which buries the domain instead of switching the
+            # rule off, and YAML's no/off/false all parse to it.
+            logger.warning(
+                "url_priority: ignoring boolean multiplier %r for %r",
+                multiplier,
+                pattern,
+            )
+            continue
         try:
             value = float(multiplier)
         except (TypeError, ValueError):
@@ -239,8 +252,9 @@ def _apply_url_priority(
             :func:`_compile_url_priority`.
 
     Returns:
-        A new ranking sorted by descending adjusted score. The input list
-        is returned unchanged when *patterns* is empty.
+        A new ranking sorted by descending adjusted score. When *patterns*
+        is empty the input list is returned as-is, by identity, so the
+        caller can rely on no reordering having happened.
     """
     if not patterns:
         return fused
@@ -252,6 +266,15 @@ def _apply_url_priority(
         for pattern, value in patterns:
             if pattern.search(url):
                 multiplier *= value
+        if math.isnan(multiplier):
+            # Each entry passed the input guard, but the product can still
+            # be NaN (inf * 0.0). One NaN is enough to make the sort below
+            # non-transitive, so fall back to the unadjusted score.
+            logger.warning(
+                "url_priority: NaN from overlapping patterns for %r, leaving score unadjusted",
+                url,
+            )
+            multiplier = 1.0
         adjusted.append(SparseResult(doc_id=item.doc_id, score=item.score * multiplier))
 
     adjusted.sort(key=lambda r: r.score, reverse=True)

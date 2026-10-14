@@ -70,6 +70,16 @@ class TestCompile:
     def test_non_numeric_multiplier_is_skipped(self, bad: object) -> None:
         assert _compile_url_priority({"example.com": bad}) == []
 
+    @pytest.mark.parametrize("bad", [True, False])
+    def test_boolean_multiplier_is_skipped(self, bad: bool) -> None:
+        """A bool is a legal float() argument, so it needs its own guard.
+
+        False is the one that bites: it becomes 0.0, which buries the domain
+        rather than switching the rule off, and YAML's false/no/off all
+        parse to it.
+        """
+        assert _compile_url_priority({"example.com": bad}) == []
+
     def test_negative_multiplier_is_skipped(self) -> None:
         assert _compile_url_priority({"example.com": -1.0}) == []
 
@@ -106,6 +116,31 @@ class TestApply:
     def test_no_patterns_leaves_the_ranking_alone(self) -> None:
         urls = ["https://a.example/1", "https://b.example/2"]
         assert ranked_by(urls, None) == urls
+
+    def test_no_patterns_returns_the_very_same_list(self) -> None:
+        """The docstring promises the input list back, so pin the identity."""
+        results = [make_result("https://a.example/1")]
+        fused = [SparseResult(doc_id="0", score=1.0)]
+
+        assert _apply_url_priority(fused, results, []) is fused
+
+    def test_compounded_nan_falls_back_to_the_unadjusted_score(self) -> None:
+        """inf and 0.0 each pass the input guard, but inf * 0.0 is NaN.
+
+        Without the product check, one such pair makes the sort
+        non-transitive and the order arbitrary.
+        """
+        results = [make_result(f"https://spam.example/{i}") for i in range(4)]
+        fused = [
+            SparseResult(doc_id=str(i), score=s)
+            for i, s in enumerate([1.0, 0.9, 0.8, 0.7])
+        ]
+        patterns = _compile_url_priority({"spam": float("inf"), "spam\\.example": 0.0})
+
+        got = _apply_url_priority(fused, results, patterns)
+
+        assert [r.score for r in got] == [1.0, 0.9, 0.8, 0.7]
+        assert [r.doc_id for r in got] == ["0", "1", "2", "3"]
 
     def test_matching_url_is_promoted(self) -> None:
         got = ranked_by(
