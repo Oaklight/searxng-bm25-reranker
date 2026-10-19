@@ -95,7 +95,7 @@ docker compose up -d
 
 The plugin works out of the box with no additional configuration. Every value below can be
 overridden per instance in `settings.yml` in a top-level block keyed by the plugin id; all
-must be numbers `>= 1`.
+must be numbers `>= 1`, and `rrf_k` must be a whole number.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -110,7 +110,8 @@ Fixed and not exposed: Okapi BM25 with `k1=1.5`, `b=0.75`, `delta=0`.
 `rrf_k` defaults to 20 rather than the Cormack et al. value of 60 because that constant was
 tuned on retrieval runs with thousands of candidates, while a SearXNG page holds roughly 30
 results. At 60, the gap between rank 1 and rank 30 collapses to 1.48x and mutes the relevance
-signal.
+signal. A value far above 20 flattens the differences further and eventually reduces the
+rerank to engine order.
 
 ```yaml
 bm25_reranker:
