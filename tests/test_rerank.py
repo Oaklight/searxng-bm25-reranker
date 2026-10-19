@@ -184,6 +184,50 @@ class TestSettings:
         assert not hasattr(plugin, "plg_cfg")
         assert plugin._setting("engine_weight") == 3.0
 
+    def test_tunables_reach_the_index_and_the_fusion(self, monkeypatch) -> None:
+        """Pin the wiring, not just the getter.
+
+        Hardcoding ``k=60``, ``weights=[1.0, 1.0]`` or the title/content
+        weights inside ``_rerank`` leaves every other test green: the setting
+        is read and then ignored, which is the shape of the ``self.plg_cfg``
+        bug this file exists to pin.
+        """
+        import searxng_bm25_reranker as plugin_mod
+
+        captured: dict = {}
+
+        def fake_rrf(*lists, **kwargs):
+            captured["k"] = kwargs["k"]
+            captured["weights"] = kwargs["weights"]
+            return []
+
+        class FakeIndex:
+            def __init__(self, **kwargs):
+                captured["field_weights"] = kwargs["field_weights"]
+
+            def add(self, *args, **kwargs):
+                return None
+
+            def search(self, *args, **kwargs):
+                return []
+
+        monkeypatch.setattr(plugin_mod, "rrf", fake_rrf, raising=True)
+        monkeypatch.setattr(plugin_mod, "SparseIndex", FakeIndex, raising=True)
+
+        rerank(
+            [make_result("a", "b"), make_result("c", "d")],
+            "a",
+            rrf_k=7,
+            engine_weight=3.0,
+            bm25_weight=5.0,
+            title_weight=4.0,
+            content_weight=6.0,
+        )
+
+        assert captured["k"] == 7
+        assert captured["weights"] == [3.0, 5.0]
+        assert captured["field_weights"] == {"title": 4.0, "content": 6.0}
+
 
 class TestPostSearchRobustness:
     def test_broken_search_object_does_not_raise(self) -> None:
