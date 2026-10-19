@@ -28,9 +28,10 @@ __version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
 
-# Only an actual opening tag: `<x`, `</x`. A bare `<` followed by punctuation or
-# space (e.g. `a < b and c > d`) must survive untouched.
-_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+# Only an actual tag: `<x`, `</x`, with quoted attribute values allowed to
+# contain `>`. A bare `<` followed by punctuation or space (e.g.
+# `a < b and c > d`) must survive untouched.
+_TAG_RE = re.compile(r"</?[a-zA-Z](?:[^>\"']|\"[^\"]*\"|'[^']*')*>")
 
 # Tuning defaults. Each one can be overridden per instance in settings.yml via a
 # top-level block keyed by the plugin id, e.g.
@@ -65,7 +66,7 @@ class SXNGPlugin(Plugin):
             preference_section="general",
         )
 
-    def _setting(self, name: str) -> float:
+    def _setting(self, name: str, *, integer: bool = False) -> float:
         """Read an optional numeric setting, falling back to the default.
 
         Tunables live in a top-level ``bm25_reranker:`` block in settings.yml,
@@ -75,10 +76,16 @@ class SXNGPlugin(Plugin):
 
         Values below 1 are rejected: every tunable is a fusion constant or a
         relative weight, and a sub-unit ``rrf_k`` truncates to 0 under ``int()``
-        and makes ``rrf()`` raise.
+        and makes ``rrf()`` raise. Booleans are rejected because ``float(True)``
+        is ``1.0`` and would slip past the bound check. With *integer* set the
+        value must also be whole; ``rrf_k`` is passed to :func:`rrf` through
+        ``int()``, so ``1.9`` would otherwise truncate to ``1`` silently.
         """
         raw = _plugin_settings(self.id).get(name)
         if raw is None:
+            return DEFAULTS[name]
+        if isinstance(raw, bool):
+            logger.warning("Invalid %s=%r, using %s", name, raw, DEFAULTS[name])
             return DEFAULTS[name]
         try:
             value = float(raw)
@@ -88,6 +95,11 @@ class SXNGPlugin(Plugin):
         if value < 1:
             logger.warning(
                 "%s must be >= 1, got %r, using %s", name, raw, DEFAULTS[name]
+            )
+            return DEFAULTS[name]
+        if integer and not value.is_integer():
+            logger.warning(
+                "%s must be an integer, got %r, using %s", name, raw, DEFAULTS[name]
             )
             return DEFAULTS[name]
         return value
@@ -162,7 +174,7 @@ class SXNGPlugin(Plugin):
         fused = rrf(
             engine_ranking,
             bm25_results,
-            k=int(self._setting("rrf_k")),
+            k=int(self._setting("rrf_k", integer=True)),
             weights=[
                 self._setting("engine_weight"),
                 self._setting("bm25_weight"),
@@ -213,8 +225,11 @@ def _get_text(result: t.Any, field: str) -> str:
         val = getattr(result, field, "")
     if not isinstance(val, str):
         return ""
-    val = _TAG_RE.sub(" ", val)
-    return html_lib.unescape(val)
+    # Decode entities before stripping. Stripping first lets `&lt;script&gt;`
+    # survive the regex and then unescape into a real tag, whose words would be
+    # indexed as content -- the noise this function exists to remove.
+    val = html_lib.unescape(val)
+    return _TAG_RE.sub(" ", val)
 
 
 def _plugin_settings(plugin_id: str) -> t.Mapping[str, t.Any]:
