@@ -24,7 +24,7 @@ if t.TYPE_CHECKING:
     from searx.plugins import PluginCfg  # ty: ignore[unresolved-import]
     from searx.search import SearchWithPlugins  # ty: ignore[unresolved-import]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logger = logging.getLogger(__name__)
 
