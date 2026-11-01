@@ -1,12 +1,12 @@
+# SearXNG BM25 Reranker
+
+**English** | [中文](README_zh.md)
+
 [![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
 [![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
 [![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
-
-**English** | [中文](README_zh.md)
-
-# SearXNG BM25 Reranker
 
 An external SearXNG plugin that reranks search results using BM25 text relevance scoring to improve search quality.
 
