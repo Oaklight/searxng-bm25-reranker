@@ -28,43 +28,32 @@ jobs:
       - name: Install zerodep CLI
         run: pip install 'zerodep>=2026.9.9'
 
-      - name: Check for outdated modules
-        id: check
+      - name: Update vendored modules in both packages
         run: |
-          output=$(zerodep outdated --json)
-          echo "$output"
-          count=$(echo "$output" | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for m in d['modules'] if m['status']=='outdated'))")
-          if [ "$count" -gt 0 ]; then
-            echo "has_updates=true" >> "$GITHUB_OUTPUT"
-            modules=$(echo "$output" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          for m in d['modules']:
-              s = m['status']
-              if s == 'outdated':
-                  print(f\"- {m['name']}: {m['local_version']} -> {m['latest_version']}\")
-              elif s != 'up-to-date':
-                  print(f\"- {m['name']}: {s} (manual migration needed)\")
-          ")
-            echo "modules<<EOF" >> "$GITHUB_OUTPUT"
-            echo "$modules" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
+          for pkg in packages/bm25_reranker packages/sem_reranker; do
+            (cd "$pkg" && zerodep update --all)
+          done
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Update outdated modules
-        if: steps.check.outputs.has_updates == 'true'
-        run: zerodep update --all
-
       - name: Create or update Pull Request
-        if: steps.check.outputs.has_updates == 'true'
+        if: steps.changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           branch: zerodep-update
           delete-branch: true
           title: "chore(deps): update vendored zerodep modules"
           body: |
-            Automated update of vendored zerodep modules.
+            Automated update of vendored zerodep modules in both packages.
 
-            ${{ steps.check.outputs.modules }}
+            See the workflow step summary for the file list.
           labels: dependencies,zerodep
           commit-message: "chore(deps): update vendored zerodep modules"

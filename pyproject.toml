@@ -1,48 +1,29 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "searxng-bm25-reranker"
-dynamic = ["version"]
-description = "BM25 reranking plugin for SearXNG using zero-dependency sparse search"
-readme = "README.md"
-requires-python = ">=3.10"
-license = "AGPL-3.0-or-later"
-authors = [{ name = "Peng Ding", email = "pding.dp@foxmail.com" }]
-dependencies = []
-
-[project.optional-dependencies]
-dev = [
-    "complexipy==5.6.1",
-    "pre-commit>=4.0.0",
-    "pytest>=8.0.0",
-    "ruff==0.15.20",
-    "ty==0.0.54",
-]
-
-[project.urls]
-Repository = "https://github.com/Oaklight/searxng-bm25-reranker"
-
-[tool.setuptools.dynamic]
-version = { attr = "searxng_bm25_reranker.__version__" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
+# Tooling configuration for the monorepo.  Packaging lives in each package.
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["packages"]
+pythonpath = ["packages/bm25_reranker/src", "packages/sem_reranker/src"]
+addopts = ["-ra", "--strict-markers", "-m", "not live"]
+markers = [
+    "live: calls a real provider API; skipped unless the key is set",
+]
 
 [tool.ty.environment]
 python-version = "3.10"
+extra-paths = [
+    "packages/bm25_reranker/src",
+    "packages/sem_reranker/src",
+]
 
 [tool.ty.src]
-include = ["src"]
-exclude = ["src/searxng_bm25_reranker/_vendor"]
+include = ["packages"]
+exclude = ["**/_vendor/*"]
+[tool.ty.rules]
+unused-ignore-comment = "ignore"
 
 [tool.ruff]
 target-version = "py310"
+exclude = ["packages/*/src/*/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "C901"]
@@ -52,12 +33,9 @@ ignore = ["UP007", "E501"]
 max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
-"src/searxng_bm25_reranker/_vendor/*" = ["C901", "UP"]
+"packages/*/src/*/_vendor/*" = ["C901", "UP"]
 
 [tool.complexipy]
-paths = ["src"]
+paths = ["packages"]
 max-complexity-allowed = 15
-exclude = ["src/searxng_bm25_reranker/_vendor"]
-
-[tool.zerodep]
-vendor-dir = "src/searxng_bm25_reranker/_vendor"
+exclude = ["**/_vendor/*"]

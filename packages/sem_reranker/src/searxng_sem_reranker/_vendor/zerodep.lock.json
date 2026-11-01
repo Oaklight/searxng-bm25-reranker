@@ -1,0 +1,42 @@
+{
+  "generated_by": "zerodep 2026.10.24",
+  "lock_version": 1,
+  "modules": {
+    "cache": {
+      "files": {
+        "cache.py": "ae0ccee6209b1b464f4568e6d2049b53516c0585e7b52dbe2674c9f6090da944"
+      },
+      "requested": true,
+      "upstream_hash": "0daa535d12e0d214a579242ad73d725b9f18145f6c67b319fa4185e7851685ae",
+      "version": "0.2.4"
+    },
+    "httpclient": {
+      "files": {
+        "httpclient.py": "5cdbed98fec7900cd793610cf5d6a9848b60a777ecfd7c2d42140745225d81b3"
+      },
+      "requested": true,
+      "upstream_hash": "05cc27e73a15c1f2ad6f0ebc57f3d862aa72e26601644b1f7a7cf1cd934a67e3",
+      "version": "0.6.2"
+    },
+    "retry": {
+      "files": {
+        "retry.py": "da6440805ddec363699fcb1a8440459933846a052e56954bee844ef0a1b2ae18"
+      },
+      "requested": true,
+      "upstream_hash": "b29ca3c9022a2d305ce05e2c5024ce51abf655856b8be3e2ed2fd98130a94a26",
+      "version": "0.3.1"
+    },
+    "semantic_search": {
+      "files": {
+        "semantic_search.py": "1f7c4ebc34705bd4cdc661b58bb5b0aad961c6fbba1622a1ae00e26fdfed7f52"
+      },
+      "requested": true,
+      "upstream_hash": "abefee494b041e89309e7d3328d7ca4adbf76595d6f45ee98b200271965eca23",
+      "version": "0.2.0"
+    }
+  },
+  "source": {
+    "ref": "v2026.10.25",
+    "repo": "Oaklight/zerodep"
+  }
+}

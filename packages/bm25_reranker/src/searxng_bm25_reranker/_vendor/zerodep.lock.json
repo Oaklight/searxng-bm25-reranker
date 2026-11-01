@@ -1,0 +1,18 @@
+{
+  "generated_by": "zerodep 2026.10.24",
+  "lock_version": 1,
+  "modules": {
+    "sparse_search": {
+      "files": {
+        "sparse_search.py": "a26950b26e14e50574bb6288b84586f01a22acb7c96dcc0c3cdc24f18038c68c"
+      },
+      "requested": true,
+      "upstream_hash": "9da4fd5f87bd0f9c7d21c4af5ff0c52353a08ae222f39c7c7a14f316a96a6e31",
+      "version": "0.4.0"
+    }
+  },
+  "source": {
+    "ref": "v2026.10.25",
+    "repo": "Oaklight/zerodep"
+  }
+}

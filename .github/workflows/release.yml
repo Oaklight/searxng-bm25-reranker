@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to release"
+        required: true
+        type: choice
+        options:
+          - bm25
+          - sem
+      version:
+        description: "Version to release (e.g. 0.3.0)"
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history and tags so a back-release can verify the version
+          # at an existing tag instead of only the default branch.
+          fetch-depth: 0
+
+      - name: Resolve tag and verify version
+        id: version
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$PACKAGE" in
+            bm25)
+              INIT=packages/bm25_reranker/src/searxng_bm25_reranker/__init__.py
+              TAG="bm25-v$VERSION"
+              ;;
+            sem)
+              INIT=packages/sem_reranker/src/searxng_sem_reranker/__init__.py
+              TAG="sem-v$VERSION"
+              ;;
+            *)
+              echo "::error::Unknown package: $PACKAGE"
+              exit 1
+              ;;
+          esac
+
+          ver_of() { sed -n 's/^__version__ = "\(.*\)"/\1/p'; }
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists — back-release mode."
+            PKG_VER=$(git show "$TAG:$INIT" | ver_of)
+            echo "Version at $TAG: $PKG_VER"
+          else
+            echo "Tag $TAG does not exist — fresh release mode."
+            PKG_VER=$(ver_of < "$INIT")
+            echo "Version in working tree: $PKG_VER"
+          fi
+
+          [ "$PKG_VER" = "$VERSION" ] || \
+            (echo "::error::Version mismatch: $INIT has $PKG_VER but release requested $VERSION"; exit 1)
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+  build-publish:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build distributions
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          case "$PACKAGE" in
+            bm25) DIR=packages/bm25_reranker ;;
+            sem) DIR=packages/sem_reranker ;;
+          esac
+          python -m pip install --upgrade pip build
+          python -m build "$DIR" --outdir dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
+
+  github-release:
+    needs: [prepare, build-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading artifacts."
+            gh release upload "$TAG" dist/* --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --repo "$REPO" \
+              --title "$TAG" \
+              --generate-notes
+          fi

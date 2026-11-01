@@ -10,8 +10,8 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        description: Type check with ty.
-        entry: ty check
+        description: Type check both packages with ty.
+        entry: ty check packages/bm25_reranker/src packages/sem_reranker/src
         language: system
         pass_filenames: false
         require_serial: true
@@ -21,6 +21,6 @@ repos:
     rev: v5.1.0
     hooks:
       - id: complexipy
-        files: ^src/searxng_bm25_reranker/
-        exclude: ^src/searxng_bm25_reranker/_vendor/
+        files: ^packages/(bm25_reranker|sem_reranker)/
+        exclude: ^packages/(bm25_reranker|sem_reranker)/src/searxng_(bm25|sem)_reranker/_vendor/
         args: [-mx, "15"]

@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "docker/**"
-      - "src/**"
+      - "packages/**"
       - "pyproject.toml"
   schedule:
     - cron: "23 4 * * *" # daily at 04:23 UTC
@@ -38,6 +38,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:latest_bm25
+            ${{ env.IMAGE_NAME }}:latest_sem
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

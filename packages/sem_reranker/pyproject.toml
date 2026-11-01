@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "searxng-sem-reranker"
+dynamic = ["version"]
+description = "Semantic embedding and cross-encoder reranking plugin for SearXNG, with no runtime dependencies"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+authors = [{ name = "Peng Ding", email = "pding.dp@foxmail.com" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.0.0",
+    "complexipy==5.6.1",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "ruff==0.15.20",
+    "ty==0.0.54",
+]
+
+[project.urls]
+Repository = "https://github.com/Oaklight/searxng-bm25-reranker"
+
+[tool.setuptools.dynamic]
+version = { attr = "searxng_sem_reranker.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.zerodep]
+vendor-dir = "src/searxng_sem_reranker/_vendor"
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.src]
+include = ["src"]
+exclude = ["**/_vendor/*"]
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "C901"]
+ignore = ["UP007", "E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"src/searxng_sem_reranker/_vendor/*" = ["C901", "UP"]
+
+[tool.complexipy]
+paths = ["src"]
+max-complexity-allowed = 15
+exclude = ["**/_vendor/*"]

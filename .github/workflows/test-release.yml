@@ -1,0 +1,71 @@
+name: Test Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to test-release"
+        required: true
+        type: choice
+        options:
+          - bm25
+          - sem
+      version:
+        description: "Version to test-release (e.g. 0.3.0.dev1)"
+        required: true
+        type: string
+
+jobs:
+  build-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify version matches package
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$PACKAGE" in
+            bm25) INIT=packages/bm25_reranker/src/searxng_bm25_reranker/__init__.py ;;
+            sem) INIT=packages/sem_reranker/src/searxng_sem_reranker/__init__.py ;;
+            *)
+              echo "::error::Unknown package: $PACKAGE"
+              exit 1
+              ;;
+          esac
+
+          PKG_VER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$INIT")
+          echo "Package version: $PKG_VER"
+          echo "Requested version: $VERSION"
+          [ "$PKG_VER" = "$VERSION" ] || \
+            (echo "::error::Version mismatch: $INIT has $PKG_VER but release requested $VERSION"; exit 1)
+
+      - name: Build distributions
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          case "$PACKAGE" in
+            bm25) DIR=packages/bm25_reranker ;;
+            sem) DIR=packages/sem_reranker ;;
+          esac
+          python -m pip install --upgrade pip build
+          python -m build "$DIR" --outdir dist
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
