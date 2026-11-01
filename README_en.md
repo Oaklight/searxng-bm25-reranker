@@ -42,8 +42,15 @@ bm25_reranker:
   rrf_k: 20
 
 sem_reranker:
+  embedding:
+    enabled: false            # optional; enable for vector similarity
+    format: openai
+    url: https://api.siliconflow.cn/v1/embeddings
+    model: BAAI/bge-m3
+    api_key_env: SILICONFLOW_API_KEY
+
   rerank:
-    enabled: true
+    enabled: true             # optional; enable for cross-encoder reranking
     format: jina
     url: https://api.siliconflow.cn/v1/rerank
     model: BAAI/bge-reranker-v2-m3
@@ -55,8 +62,11 @@ rerankers:
   coordinator: sem_reranker
 ```
 
-Each stage has its own `format`, `url`, `api_key_env`, and `api_key`.
-Embedding and rerank can use different hosts and different keys.
+Both stages are optional. The example enables rerank only; embedding is off
+by default. Set `embedding.enabled: true` to add vector similarity. Each stage
+has its own `format`, `url`, `api_key_env`, and `api_key`. Embedding and rerank
+can use different hosts and different keys. The full schema is in the
+[sem_reranker README](packages/sem_reranker/README_en.md).
 
 Two SearXNG rules matter:
 

@@ -37,8 +37,15 @@ bm25_reranker:
   rrf_k: 20
 
 sem_reranker:
+  embedding:
+    enabled: false            # 可选；启用后加入向量相似度
+    format: openai
+    url: https://api.siliconflow.cn/v1/embeddings
+    model: BAAI/bge-m3
+    api_key_env: SILICONFLOW_API_KEY
+
   rerank:
-    enabled: true
+    enabled: true             # 可选；启用后加入交叉编码器重排序
     format: jina
     url: https://api.siliconflow.cn/v1/rerank
     model: BAAI/bge-reranker-v2-m3
@@ -50,7 +57,10 @@ rerankers:
   coordinator: sem_reranker
 ```
 
-每个阶段都有自己的 `format`、`url`、`api_key_env` 和 `api_key`。embedding 与 rerank 可以使用不同主机和不同密钥。
+两个阶段都是可选的。示例只启用 rerank；embedding 默认关闭。设置
+`embedding.enabled: true` 可加入向量相似度。每个阶段都有自己的 `format`、
+`url`、`api_key_env` 和 `api_key`。embedding 与 rerank 可以使用不同主机和不同密钥。
+完整配置见 [sem_reranker README](packages/sem_reranker/README_zh.md)。
 
 SearXNG 的两条配置规则：
 

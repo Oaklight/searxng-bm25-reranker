@@ -45,22 +45,23 @@ sem_reranker:
 
 ## 配置
 
+两个阶段都是可选的，默认都关闭。可以只启用一个，也可以两个都启用。
+
 ```yaml
 sem_reranker:
   embedding:
-    enabled: false
+    enabled: false                 # 可选；设为 true 启用此阶段
     format: openai                 # openai | cohere | jina | voyage
     url: https://api.siliconflow.cn/v1/embeddings
     model: BAAI/bge-m3             # 或 Qwen/Qwen3-Embedding-0.6B（32k）
     api_key_env: SILICONFLOW_API_KEY
     api_key: ""
-    top_k: 0                       # 0 表示关闭
     weight: 1.0
     max_chars: 4000
     timeout_ms: 3000
 
   rerank:
-    enabled: false
+    enabled: false                 # 可选；设为 true 启用此阶段
     format: jina                   # jina | cohere | voyage
     url: https://api.siliconflow.cn/v1/rerank
     model: BAAI/bge-reranker-v2-m3 # 或 Qwen/Qwen3-Reranker-0.6B（32k）
