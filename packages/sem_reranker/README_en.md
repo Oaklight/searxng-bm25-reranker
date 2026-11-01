@@ -2,6 +2,13 @@
 
 **English** | [中文](README_zh.md)
 
+[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
+[![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
+
 An external SearXNG plugin that reranks search results with a remote embedding
 model, a remote cross-encoder reranker, or both. Model hosting is separate from
 the SearXNG process: the plugin only needs an API URL, a key, and model names.

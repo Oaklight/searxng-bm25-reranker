@@ -1,5 +1,14 @@
 # SearXNG Semantic Reranker
 
+[English](README.md) | **中文**
+
+[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
+[![SearXNG](https://img.shields.io/badge/SearXNG-plugin-orange.svg)](https://github.com/searxng/searxng)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
+
 SearXNG 外部插件。它用远程向量模型、远程交叉编码器，或两者同时，对搜索结果重排序。模型托管与 SearXNG 进程分离：插件只需要 API 地址、密钥和模型名。
 
 - **两个独立阶段** — 向量相似度与交叉编码器重排序；默认都关闭。
