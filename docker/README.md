@@ -18,10 +18,24 @@ SEARXNG_SECRET="$(openssl rand -hex 32)" \
   docker compose -f docker/docker-compose.yml up --build
 ```
 
-Open <http://localhost:8080>.
+Open <http://localhost:8080>. Set `SEARXNG_PORT` to use a different host port.
 
 `SEARXNG_SECRET` must be set for a real deployment. The default `change-me`
 is only for a local test.
+
+## TestPyPI build
+
+`BM25_VERSION` and `SEM_VERSION` take a PEP 440 specifier. Point
+`PIP_INDEX_URL` at TestPyPI to test a pre-release without touching PyPI.
+
+```bash
+PIP_INDEX_URL=https://test.pypi.org/simple/ \
+  BM25_VERSION="==0.4.0.dev1" \
+  SEM_VERSION="==0.2.0.dev1" \
+  SEARXNG_PORT=8088 \
+  SEARXNG_SECRET="$(openssl rand -hex 32)" \
+  docker compose -p searxng-test -f docker/docker-compose.yml up --build -d
+```
 
 ## Local model server
 

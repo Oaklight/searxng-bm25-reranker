@@ -10,7 +10,7 @@ services:
     image: oaklight/searxng:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro
     environment:
