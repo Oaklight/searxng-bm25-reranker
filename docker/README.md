@@ -30,8 +30,8 @@ is only for a local test.
 
 ```bash
 PIP_INDEX_URL=https://test.pypi.org/simple/ \
-  BM25_VERSION="==0.4.0.dev1" \
-  SEM_VERSION="==0.2.0.dev1" \
+  BM25_VERSION="==0.4.0" \
+  SEM_VERSION="==0.2.0" \
   SEARXNG_PORT=8088 \
   SEARXNG_SECRET="$(openssl rand -hex 32)" \
   docker compose -p searxng-test -f docker/docker-compose.yml up --build -d

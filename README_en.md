@@ -125,13 +125,15 @@ every request when it is active.
 
 ```bash
 make test
+make stress
 make lint
 make build
 make vendor
 ```
 
 Run `pytest` from the repository root so the shared `conftest.py` stub loads for
-both packages.
+both packages. `make stress` runs the large-input and failure-path tests; the
+default run excludes them.
 
 ## License
 

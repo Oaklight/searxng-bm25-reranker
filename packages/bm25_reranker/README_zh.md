@@ -207,11 +207,12 @@ packages/bm25_reranker/
 │       └── sparse_search.py # 来自 zerodep 的 BM25 引擎（vendored）
 └── tests/
     ├── test_rerank.py
+    ├── test_stress_bm25.py
     ├── test_tokenizer.py
     └── test_url_priority.py
 ```
 
-在仓库根目录运行 `pytest`。共享的 `conftest.py` 会安装 SearXNG API stub，因为 SearXNG 不是依赖。
+在仓库根目录运行 `pytest`。共享的 `conftest.py` 会安装 SearXNG API stub，因为 SearXNG 不是依赖。大输入和失败路径测试用 `make stress` 运行。
 
 ## 致谢
 

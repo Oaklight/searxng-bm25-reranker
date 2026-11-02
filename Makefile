@@ -1,4 +1,4 @@
-.PHONY: install-dev test live lint build vendor
+.PHONY: install-dev test live stress lint build vendor
 
 install-dev:
 	python -m pip install -e "packages/bm25_reranker[dev]" -e packages/sem_reranker
@@ -8,6 +8,9 @@ test:
 
 live:
 	python -m pytest packages -q -m live
+
+stress:
+	python -m pytest packages -q -m stress
 
 lint:
 	ruff check packages

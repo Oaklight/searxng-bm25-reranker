@@ -106,12 +106,13 @@ rerankers:
 
 ```bash
 make test
+make stress
 make lint
 make build
 make vendor
 ```
 
-在仓库根目录运行 `pytest`，共享的 `conftest.py` 才能为两个包加载。
+在仓库根目录运行 `pytest`，共享的 `conftest.py` 才能为两个包加载。`make stress` 运行大输入和失败路径测试；默认运行会跳过这些测试。
 
 ## 许可证
 

@@ -232,12 +232,14 @@ packages/bm25_reranker/
 │       └── sparse_search.py # BM25 engine from zerodep (vendored)
 └── tests/
     ├── test_rerank.py
+    ├── test_stress_bm25.py
     ├── test_tokenizer.py
     └── test_url_priority.py
 ```
 
 Run the tests from the repository root with `pytest`. The shared `conftest.py`
-installs the SearXNG API stub because SearXNG is not a dependency.
+installs the SearXNG API stub because SearXNG is not a dependency. Run
+`make stress` for the large-input and failure-path tests.
 
 ## Acknowledgements
 

@@ -220,10 +220,12 @@ The rerank stage is the recommended default. The embedding stage is opt-in.
 ```bash
 make install-dev
 make test
+make stress
 ```
 
 Run `pytest` from the repository root so the shared `conftest.py` stub loads.
-Set `SILICONFLOW_API_KEY` to run the live test; it is skipped otherwise.
+Set `SILICONFLOW_API_KEY` to run the live test; it is skipped otherwise. Run
+`make stress` for the large-input and failure-path tests.
 
 ## License
 

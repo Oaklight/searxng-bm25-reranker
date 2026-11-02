@@ -29,7 +29,7 @@ if t.TYPE_CHECKING:
     from searx.plugins import PluginCfg  # ty: ignore[unresolved-import]
     from searx.search import SearchWithPlugins  # ty: ignore[unresolved-import]
 
-__version__ = "0.4.0.dev1"
+__version__ = "0.4.0"
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ class SXNGPlugin(Plugin):
 
         bm25_ranking = [
             SparseResult(doc_id=str(i), score=t.cast(float, scores[i]))
-            for i in rank_results(query, results)
+            for i in rank_by_score(scores)
         ]
 
         lists = [engine_ranking, bm25_ranking]

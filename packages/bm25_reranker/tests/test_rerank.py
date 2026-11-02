@@ -147,6 +147,24 @@ class TestRerankQuality:
         rerank(results, "python asyncio", url_weight=0)
         assert positions(results) == [1, 2]
 
+    def test_bm25_is_scored_once_per_rerank(self, monkeypatch) -> None:
+        import searxng_bm25_reranker as plugin_mod
+
+        calls: list[int] = []
+        original = plugin_mod.score_results
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(plugin_mod, "score_results", counting)
+        rerank(
+            [make_result("python", "asyncio"), make_result("other", "text")],
+            "python",
+        )
+
+        assert len(calls) == 1
+
     def test_single_indexable_result_is_a_noop(self) -> None:
         results = [make_result("pingueiros", "quadro"), make_result()]
         rerank(results, "pingueiros")

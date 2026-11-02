@@ -185,9 +185,10 @@ rerankers:
 ```bash
 make install-dev
 make test
+make stress
 ```
 
-在仓库根目录运行 `pytest`，共享的 `conftest.py` 才能加载。设置 `SILICONFLOW_API_KEY` 后可运行实时测试；未设置时自动跳过。
+在仓库根目录运行 `pytest`，共享的 `conftest.py` 才能加载。设置 `SILICONFLOW_API_KEY` 后可运行实时测试；未设置时自动跳过。大输入和失败路径测试用 `make stress` 运行。
 
 ## 许可证
 

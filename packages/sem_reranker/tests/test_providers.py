@@ -120,6 +120,12 @@ class TestParseEmbeddings:
         with pytest.raises(ProviderError):
             parse_embeddings("openai", payload, 1)
 
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "not-a-number", None])
+    def test_non_finite_or_non_numeric_values_raise(self, value) -> None:
+        payload = {"data": [{"embedding": [1.0, value]}]}
+        with pytest.raises(ProviderError):
+            parse_embeddings("openai", payload, 1)
+
 
 class TestParseRerank:
     def test_results_are_placed_by_index(self) -> None:
@@ -138,6 +144,11 @@ class TestParseRerank:
     def test_out_of_range_index_is_ignored(self) -> None:
         payload = {"results": [{"index": 9, "relevance_score": 1.0}]}
         assert parse_rerank(payload, 2) == [None, None]
+
+    @pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_scores_are_skipped(self, score) -> None:
+        payload = {"results": [{"index": 0, "relevance_score": score}]}
+        assert parse_rerank(payload, 1) == [None]
 
     def test_missing_results_raises(self) -> None:
         with pytest.raises(ProviderError):

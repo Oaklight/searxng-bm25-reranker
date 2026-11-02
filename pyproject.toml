@@ -3,9 +3,10 @@
 [tool.pytest.ini_options]
 testpaths = ["packages"]
 pythonpath = ["packages/bm25_reranker/src", "packages/sem_reranker/src"]
-addopts = ["-ra", "--strict-markers", "-m", "not live"]
+addopts = ["-ra", "--strict-markers", "-m", "not live and not stress"]
 markers = [
     "live: calls a real provider API; skipped unless the key is set",
+    "stress: large or adversarial inputs; run with make stress",
 ]
 
 [tool.ty.environment]

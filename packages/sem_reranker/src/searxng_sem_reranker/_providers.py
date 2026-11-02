@@ -6,6 +6,7 @@ and response parsing come from vendored zerodep modules.
 
 from __future__ import annotations
 
+import math
 import typing as t
 
 from ._config import StageConfig
@@ -102,6 +103,19 @@ def parse_embeddings(
     expected: int,
 ) -> list[list[float]]:
     """Extract vectors from an embedding response and preserve input order."""
+    vectors = _vectors_from_payload(fmt, payload)
+    if len(vectors) != expected:
+        raise ProviderError(
+            f"embedding response has {len(vectors)} vectors, expected {expected}"
+        )
+    return [_parse_vector(vector) for vector in vectors]
+
+
+def _vectors_from_payload(
+    fmt: str,
+    payload: t.Mapping[str, t.Any],
+) -> list[t.Any]:
+    """Locate the raw vector list in any supported response shape."""
     if fmt == "cohere":
         embeddings = payload.get("embeddings")
         if isinstance(embeddings, t.Mapping):
@@ -123,17 +137,25 @@ def parse_embeddings(
 
     if not isinstance(vectors, list):
         raise ProviderError("embedding response has no vector list")
-    if len(vectors) != expected:
-        raise ProviderError(
-            f"embedding response has {len(vectors)} vectors, expected {expected}"
-        )
+    return vectors
 
-    result: list[list[float]] = []
-    for vector in vectors:
-        if not isinstance(vector, list) or not vector:
-            raise ProviderError("embedding response contains a malformed vector")
-        result.append([float(value) for value in t.cast(list[t.Any], vector)])
-    return result
+
+def _parse_vector(vector: t.Any) -> list[float]:
+    """Convert one raw vector to floats, rejecting NaN and infinity."""
+    if not isinstance(vector, list) or not vector:
+        raise ProviderError("embedding response contains a malformed vector")
+    numbers: list[float] = []
+    for value in t.cast(list[t.Any], vector):
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(
+                "embedding response contains a non-numeric value"
+            ) from exc
+        if not math.isfinite(number):
+            raise ProviderError("embedding response contains a non-finite value")
+        numbers.append(number)
+    return numbers
 
 
 def parse_rerank(
@@ -155,7 +177,9 @@ def parse_rerank(
             index = int(item["index"])
             score = item.get("relevance_score", item.get("score"))
             value = float(score)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(value):
             continue
         if 0 <= index < expected:
             scores[index] = value

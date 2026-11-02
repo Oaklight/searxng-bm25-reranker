@@ -9,7 +9,7 @@ Runtime code uses only the standard library and vendored zerodep modules.
 
 from __future__ import annotations
 
-__version__ = "0.2.0.dev1"
+__version__ = "0.2.0"
 
 import hashlib
 import html as html_lib
