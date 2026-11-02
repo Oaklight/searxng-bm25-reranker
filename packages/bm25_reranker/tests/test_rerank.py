@@ -7,12 +7,19 @@ from types import SimpleNamespace
 from searx import settings
 from searx.plugins import PluginCfg
 
-from searxng_bm25_reranker import DEFAULTS, SXNGPlugin, _get_text
+from searxng_bm25_reranker import DEFAULTS, SXNGPlugin, _get_text, _url_text
 
 
-def make_result(title: str = "", content: str = "", n_positions: int = 1) -> dict:
+def make_result(
+    title: str = "", content: str = "", n_positions: int = 1, url: str = ""
+) -> dict:
     """Build a result in the []-accessible shape SearXNG hands the plugin."""
-    return {"title": title, "content": content, "positions": [1] * n_positions}
+    return {
+        "title": title,
+        "content": content,
+        "url": url,
+        "positions": [1] * n_positions,
+    }
 
 
 def make_plugin(**overrides: object) -> SXNGPlugin:
@@ -112,6 +119,34 @@ class TestRerankQuality:
         rerank(results, "zzzzqqqq")
         assert positions(results) == [1, 2, 3]
 
+    def test_url_field_promotes_a_matching_path(self) -> None:
+        results = [
+            make_result(
+                "Guide", "general documentation", url="https://example.com/other"
+            ),
+            make_result(
+                "Guide",
+                "general documentation",
+                url="https://example.com/python/asyncio",
+            ),
+        ]
+        rerank(results, "python asyncio")
+        assert results[1]["positions"][0] == 1
+
+    def test_url_weight_zero_removes_the_url_signal(self) -> None:
+        results = [
+            make_result(
+                "Guide", "general documentation", url="https://example.com/other"
+            ),
+            make_result(
+                "Guide",
+                "general documentation",
+                url="https://example.com/python/asyncio",
+            ),
+        ]
+        rerank(results, "python asyncio", url_weight=0)
+        assert positions(results) == [1, 2]
+
     def test_single_indexable_result_is_a_noop(self) -> None:
         results = [make_result("pingueiros", "quadro"), make_result()]
         rerank(results, "pingueiros")
@@ -148,6 +183,23 @@ class TestHtmlStripping:
 
     def test_half_comparison_keeps_the_angle_bracket(self) -> None:
         assert _get_text({"content": "x < 5"}, "content") == "x < 5"
+
+
+class TestUrlText:
+    def test_keeps_host_and_path(self) -> None:
+        assert (
+            _url_text("https://www.example.com/python/asyncio?utm_source=x#intro")
+            == "example.com /python/asyncio"
+        )
+
+    def test_decodes_percent_escapes(self) -> None:
+        assert (
+            _url_text("https://example.com/%E4%B8%AD%E6%96%87") == "example.com /中文"
+        )
+
+    def test_empty_and_unparseable(self) -> None:
+        assert _url_text("") == ""
+        assert _url_text("not a url") == "not a url"
 
 
 class TestSettings:
@@ -222,11 +274,16 @@ class TestSettings:
             bm25_weight=5.0,
             title_weight=4.0,
             content_weight=6.0,
+            url_weight=8.0,
         )
 
         assert captured["k"] == 7
         assert captured["weights"] == [3.0, 5.0]
-        assert captured["field_weights"] == {"title": 4.0, "content": 6.0}
+        assert captured["field_weights"] == {
+            "title": 4.0,
+            "content": 6.0,
+            "url": 8.0,
+        }
 
 
 class TestPostSearchRobustness:

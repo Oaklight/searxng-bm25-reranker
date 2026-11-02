@@ -1,0 +1,80 @@
+# Example SearXNG settings for the combined image.
+#
+# A user `plugins:` block replaces SearXNG's default plugin list, so the
+# built-ins are listed here together with the two rerankers.  When the base
+# image is upgraded, compare this list with
+# /usr/local/searxng/searx/settings.yml inside the image.
+use_default_settings: true
+
+server:
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+
+plugins:
+
+  searx.plugins.calculator.SXNGPlugin:
+    active: true
+
+  searx.plugins.infinite_scroll.SXNGPlugin:
+    active: false
+
+  searx.plugins.hash_plugin.SXNGPlugin:
+    active: true
+
+  searx.plugins.self_info.SXNGPlugin:
+    active: true
+
+  searx.plugins.unit_converter.SXNGPlugin:
+    active: true
+
+  searx.plugins.ahmia_filter.SXNGPlugin:
+    active: true
+
+  searx.plugins.hostnames.SXNGPlugin:
+    active: true
+
+  searx.plugins.time_zone.SXNGPlugin:
+    active: true
+
+  searx.plugins.oa_doi_rewrite.SXNGPlugin:
+    active: false
+
+  searx.plugins.tor_check.SXNGPlugin:
+    active: false
+
+  searxng_bm25_reranker.SXNGPlugin:
+    active: true
+
+  searxng_sem_reranker.SXNGPlugin:
+    active: true
+
+bm25_reranker:
+  rrf_k: 20
+  url_weight: 0.5
+
+sem_reranker:
+  # Both stages are optional and off by default.  Point the URLs at a vLLM
+  # or llama.cpp server on the host, then set enabled: true.
+  embedding:
+    enabled: false
+    format: openai
+    url: http://host.docker.internal:8000/v1/embeddings
+    model: BAAI/bge-m3
+    api_key_env: ""
+
+  rerank:
+    enabled: false
+    format: jina
+    url: http://host.docker.internal:8001/v1/rerank
+    model: BAAI/bge-reranker-v2-m3
+    api_key_env: ""
+    top_k: 10
+    timeout_ms: 3000
+
+rerankers:
+  coordinator: bm25_reranker

@@ -16,6 +16,7 @@ def _reset_state() -> t.Iterator[None]:
     sem._EMBED_CACHE = None
     sem._RERANK_CACHE = None
     sem._CACHE_SHAPE = None
+    sem._DISABLED.clear()
     yield
     searx.settings.clear()
 

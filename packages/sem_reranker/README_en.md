@@ -2,7 +2,7 @@
 
 **English** | [中文](README_zh.md)
 
-[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/searxng-sem-reranker?color=green)](https://pypi.org/project/searxng-sem-reranker/)
 [![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
@@ -19,7 +19,8 @@ the SearXNG process: the plugin only needs an API URL, a key, and model names.
   shapes. Point each stage at its own base URL and key.
 - **Zero runtime dependencies** — HTTP, cache, retry, cosine, and RRF come from
   vendored [zerodep](https://github.com/Oaklight/zerodep) modules.
-- **Safe fallback** — a provider timeout or error keeps the previous ranking.
+- **Safe fallback** — invalid or empty stage config is skipped, and a provider
+  error keeps the previous ranking.
 - **Works alone or with `bm25_reranker`** — one coordinator fuses engine order,
   BM25, and neural scores.
 
@@ -40,9 +41,9 @@ sem_reranker:
   rerank:
     enabled: true
     format: jina
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # set when the local server uses --api-key
     top_k: 10
     timeout_ms: 3000
 ```
@@ -60,20 +61,23 @@ sem_reranker:
   embedding:
     enabled: false                 # optional; set true to enable this stage
     format: openai                 # openai | cohere | jina | voyage
-    url: https://api.siliconflow.cn/v1/embeddings
+    url: http://localhost:8000/v1/embeddings
     model: BAAI/bge-m3             # or Qwen/Qwen3-Embedding-0.6B (32k)
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # set when the local server uses --api-key
     api_key: ""
     weight: 1.0
     max_chars: 4000
+    max_tokens: 0                  # 0 = no token cap; 512 recommended
+    query_prefix: ""               # e.g. "query: "
+    document_prefix: ""            # e.g. "passage: "
     timeout_ms: 3000
 
   rerank:
     enabled: false                 # optional; set true to enable this stage
     format: jina                   # jina | cohere | voyage
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3 # or Qwen/Qwen3-Reranker-0.6B (32k)
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # set when the local server uses --api-key
     api_key: ""
     top_k: 10
     weight: 1.0
@@ -91,6 +95,11 @@ sem_reranker:
     max_entries: 512
 ```
 
+`query_prefix` and `document_prefix` apply to the embedding stage only. Set
+them for models that expect an instruction prefix. `max_tokens` bounds the
+embedding input with a script-aware estimate; `0` disables it and leaves
+`max_chars` as the only cap.
+
 The key is read from `api_key_env` first, then from `api_key`. The key is never
 logged. To set a key directly, leave `api_key_env: ""` and put it in `api_key`:
 
@@ -104,6 +113,21 @@ Environment variables are preferred when `settings.yml` is shared, because
 anyone who can read the file can read a literal key.
 
 There are no provider presets: every stage field is explicit.
+
+### Fallback behavior
+
+A stage is skipped when `enabled` is false, when `format`, `url`, or `model`
+is missing or invalid, or when `api_key_env` names an unset variable. A 400,
+401, 403, 404, 405, or 422 response, or a malformed provider response, disables
+that stage for 5 minutes. Changing
+its URL, model, or key resets the disable. Timeouts, 429, and 5xx responses are
+treated as transient; the next request retries. With no usable stage,
+`score_neural` returns only `None`, so the coordinator keeps the BM25 or engine
+order.
+
+The example uses a vLLM server on `localhost:8000`. llama.cpp's server exposes
+the same paths on `localhost:8080`; start it with `--embeddings` for the
+embedding stage and `--reranking` for the rerank stage.
 
 `embedding` and `rerank` are independent. They may use different `format`,
 `url`, `model`, `api_key_env`, and `api_key` values. `url` is the full endpoint.
@@ -130,8 +154,8 @@ sem_reranker:
 
 ### Example models
 
-These models are supported by SiliconFlow. Any model served by the configured
-endpoint can be used.
+These models can be served by vLLM, llama.cpp, or a hosted provider. Any model
+served by the configured endpoint can be used.
 
 | Stage | Model | Context |
 | --- | --- | --- |

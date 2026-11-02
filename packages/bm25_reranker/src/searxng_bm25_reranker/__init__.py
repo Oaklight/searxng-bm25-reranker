@@ -14,6 +14,7 @@ import logging
 import math
 import re
 import typing as t
+import urllib.parse
 
 from searx import settings  # ty: ignore[unresolved-import]
 from searx.plugins import Plugin, PluginInfo  # ty: ignore[unresolved-import]
@@ -28,7 +29,7 @@ if t.TYPE_CHECKING:
     from searx.plugins import PluginCfg  # ty: ignore[unresolved-import]
     from searx.search import SearchWithPlugins  # ty: ignore[unresolved-import]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0.dev1"
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ DEFAULTS: dict[str, float] = {
     "bm25_weight": 1.0,
     "title_weight": 2.0,
     "content_weight": 1.0,
+    "url_weight": 0.5,
 }
 
 _COORDINATORS = ("bm25_reranker", "sem_reranker")
@@ -82,7 +84,9 @@ class SXNGPlugin(Plugin):
             preference_section="general",
         )
 
-    def _setting(self, name: str, *, integer: bool = False) -> float:
+    def _setting(
+        self, name: str, *, integer: bool = False, minimum: float = 1.0
+    ) -> float:
         """Read an optional numeric setting, falling back to the default.
 
         Tunables live in a top-level ``bm25_reranker:`` block in settings.yml,
@@ -90,7 +94,9 @@ class SXNGPlugin(Plugin):
         ``PluginCfg`` is a dataclass that rejects unknown keys (see
         :func:`_plugin_settings`). A bad value must not take the reranker down.
         """
-        return _read_setting(name, _plugin_settings(self.id), integer=integer)
+        return _read_setting(
+            name, _plugin_settings(self.id), integer=integer, minimum=minimum
+        )
 
     def post_search(self, request: SXNG_Request, search: SearchWithPlugins) -> None:
         """Rerank results by BM25 relevance fused with original engine ranking.
@@ -155,8 +161,8 @@ class SXNGPlugin(Plugin):
 
         lists = [engine_ranking, bm25_ranking]
         weights = [
-            self._setting("engine_weight"),
-            self._setting("bm25_weight"),
+            self._setting("engine_weight", minimum=0.0),
+            self._setting("bm25_weight", minimum=0.0),
         ]
 
         gate = load_gate(settings)
@@ -220,8 +226,9 @@ def score_results(
         variant="bm25",
         delta=0.0,
         field_weights={
-            "title": _read_setting("title_weight", cfg),
-            "content": _read_setting("content_weight", cfg),
+            "title": _read_setting("title_weight", cfg, minimum=0.0),
+            "content": _read_setting("content_weight", cfg, minimum=0.0),
+            "url": _read_setting("url_weight", cfg, minimum=0.0),
         },
         tokenize=cjk_tokenize,
     )
@@ -232,7 +239,14 @@ def score_results(
         content = _get_text(r, "content")
         if not title and not content:
             continue
-        idx.add(str(i), {"title": title, "content": content})
+        idx.add(
+            str(i),
+            {
+                "title": title,
+                "content": content,
+                "url": _url_text(_get_text(r, "url")),
+            },
+        )
         valid_indices.append(i)
 
     scores: list[float | None] = [None] * len(results)
@@ -297,6 +311,26 @@ def _rewrite_positions(results: list[t.Any], fused: list[SparseResult]) -> None:
     rewrite_positions(results, [int(f.doc_id) for f in fused])
 
 
+def _url_text(url: str) -> str:
+    """Reduce a URL to host and path for the BM25 ``url`` field.
+
+    Scheme, query, and fragment are dropped. Query strings often carry
+    tracking parameters, and the scheme only adds ``http``/``https`` noise.
+    Percent escapes are decoded so CJK slugs match the tokenizer.
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = urllib.parse.unquote(parsed.path)
+    return f"{host} {path}".strip()
+
+
 def _get_text(result: t.Any, field: str) -> str:
     """Extract a text field from an object supporting ``[]`` or attribute access.
 
@@ -349,6 +383,7 @@ def _read_setting(
     config: t.Mapping[str, t.Any],
     *,
     integer: bool = False,
+    minimum: float = 1.0,
 ) -> float:
     """Read one numeric tunable from a settings mapping with safe fallback."""
     raw = config.get(name)
@@ -362,8 +397,10 @@ def _read_setting(
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r, using %s", name, raw, DEFAULTS[name])
         return DEFAULTS[name]
-    if value < 1:
-        logger.warning("%s must be >= 1, got %r, using %s", name, raw, DEFAULTS[name])
+    if value < minimum:
+        logger.warning(
+            "%s must be >= %s, got %r, using %s", name, minimum, raw, DEFAULTS[name]
+        )
         return DEFAULTS[name]
     if integer and not value.is_integer():
         logger.warning(

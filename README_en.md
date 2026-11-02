@@ -2,6 +2,14 @@
 
 **English** | [中文](README_zh.md)
 
+[![PyPI bm25](https://img.shields.io/pypi/v/searxng-bm25-reranker?color=green&label=PyPI%20bm25)](https://pypi.org/project/searxng-bm25-reranker/)
+[![PyPI sem](https://img.shields.io/pypi/v/searxng-sem-reranker?color=green&label=PyPI%20sem)](https://pypi.org/project/searxng-sem-reranker/)
+[![TestPyPI bm25](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-bm25-reranker%2Fjson&query=%24.info.version&label=TestPyPI%20bm25&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-bm25-reranker/)
+[![TestPyPI sem](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI%20sem&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
+
 Two independent SearXNG reranking plugins that share one repository and one
 optional coordination protocol.
 
@@ -40,21 +48,22 @@ plugins:
 
 bm25_reranker:
   rrf_k: 20
+  url_weight: 0.5
 
 sem_reranker:
   embedding:
     enabled: false            # optional; enable for vector similarity
     format: openai
-    url: https://api.siliconflow.cn/v1/embeddings
+    url: http://localhost:8000/v1/embeddings
     model: BAAI/bge-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""           # set when the local server uses --api-key
 
   rerank:
     enabled: true             # optional; enable for cross-encoder reranking
     format: jina
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""           # set when the local server uses --api-key
     top_k: 10
     timeout_ms: 3000
 
@@ -63,7 +72,8 @@ rerankers:
 ```
 
 Both stages are optional. The example enables rerank only; embedding is off
-by default. Set `embedding.enabled: true` to add vector similarity. Each stage
+by default. Set `embedding.enabled: true` to add vector similarity. Embedding
+also supports `query_prefix`, `document_prefix`, and `max_tokens`. Each stage
 has its own `format`, `url`, `api_key_env`, and `api_key`. Embedding and rerank
 can use different hosts and different keys. The full schema is in the
 [sem_reranker README](packages/sem_reranker/README_en.md).

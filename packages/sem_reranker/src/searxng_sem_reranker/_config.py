@@ -33,7 +33,10 @@ class StageConfig:
     top_k: int
     weight: float
     max_chars: int
+    max_tokens: int
     timeout_ms: int
+    query_prefix: str
+    document_prefix: str
 
     def resolve_key(self) -> str:
         """Return the env key first, then the settings value."""
@@ -107,7 +110,12 @@ def _stage(
         top_k=_int(raw.get("top_k"), default_top_k, 0, f"{name}.top_k"),
         weight=_float(raw.get("weight"), 1.0, 0.0, f"{name}.weight"),
         max_chars=_int(raw.get("max_chars"), 4000, 1, f"{name}.max_chars"),
+        max_tokens=_int(raw.get("max_tokens"), 0, 0, f"{name}.max_tokens"),
         timeout_ms=_int(raw.get("timeout_ms"), 3000, 1, f"{name}.timeout_ms"),
+        query_prefix=_string(raw.get("query_prefix"), "", f"{name}.query_prefix"),
+        document_prefix=_string(
+            raw.get("document_prefix"), "", f"{name}.document_prefix"
+        ),
     )
 
 

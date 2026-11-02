@@ -15,6 +15,11 @@ def make_config(
     rerank: bool = False,
     top_k: int = 2,
     max_chars: int = 4000,
+    max_tokens: int = 0,
+    query_prefix: str = "",
+    document_prefix: str = "",
+    model: str = "test-model",
+    url: str = "https://example.test/embeddings",
     api_key_env: str = "",
 ) -> Config:
     return load_config(
@@ -24,14 +29,19 @@ def make_config(
                     "enabled": embedding,
                     "format": "openai",
                     "api_key_env": api_key_env,
-                    "url": "https://example.test/embeddings",
+                    "url": url,
+                    "model": model,
                     "max_chars": max_chars,
+                    "max_tokens": max_tokens,
+                    "query_prefix": query_prefix,
+                    "document_prefix": document_prefix,
                 },
                 "rerank": {
                     "enabled": rerank,
                     "format": "jina",
                     "api_key_env": api_key_env,
                     "url": "https://example.test/rerank",
+                    "model": model,
                     "top_k": top_k,
                     "max_chars": max_chars,
                 },
@@ -78,6 +88,55 @@ def test_empty_text_scores_none(monkeypatch) -> None:
     scores = sem.score_neural("query", data, make_config(embedding=True))
 
     assert scores[1] is None
+
+
+def test_embedding_prefixes_reach_the_provider(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def capture(stage, texts, *, query):
+        seen.append(list(texts))
+        return fake_vectors(stage, texts, query=query)
+
+    monkeypatch.setattr(sem, "embed_texts", capture)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+
+    sem.score_neural(
+        "hello",
+        results(),
+        make_config(
+            embedding=True,
+            query_prefix="query: ",
+            document_prefix="passage: ",
+        ),
+    )
+
+    assert seen == [["query: hello", "passage: a", "passage: bb", "passage: ccc"]]
+
+
+def test_max_tokens_bounds_the_embedding_payload(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def capture(stage, texts, *, query):
+        seen.extend(texts)
+        return fake_vectors(stage, texts, query=query)
+
+    monkeypatch.setattr(sem, "embed_texts", capture)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+
+    long_text = "word " * 300
+    data = [
+        {"title": long_text, "content": "", "positions": [1]},
+        {"title": "short", "content": "", "positions": [1]},
+    ]
+    sem.score_neural("q", data, make_config(embedding=True, max_tokens=10))
+
+    assert len(seen[1]) <= 40
+    assert seen[2] == "short"
+
+
+def test_truncate_tokens_is_script_aware() -> None:
+    assert sem._truncate_tokens("中" * 100, 10) == "中" * 10
+    assert len(sem._truncate_tokens("word " * 300, 10)) <= 40
 
 
 def test_rerank_only_scores_top_k_in_engine_order(monkeypatch) -> None:
@@ -149,12 +208,14 @@ def test_stages_keep_their_own_url_and_key(monkeypatch) -> None:
                     "enabled": True,
                     "format": "openai",
                     "url": "https://embed.example/embeddings",
+                    "model": "embed-model",
                     "api_key_env": "EMBED_KEY",
                 },
                 "rerank": {
                     "enabled": True,
                     "format": "jina",
                     "url": "https://rerank.example/rerank",
+                    "model": "rerank-model",
                     "api_key_env": "RERANK_KEY",
                     "top_k": 2,
                 },
@@ -182,6 +243,79 @@ def test_stages_keep_their_own_url_and_key(monkeypatch) -> None:
     assert seen["embed"].resolve_key() == "embed-secret"
     assert seen["rerank"].url == "https://rerank.example/rerank"
     assert seen["rerank"].resolve_key() == "rerank-secret"
+
+
+def test_empty_model_skips_the_stage(monkeypatch) -> None:
+    monkeypatch.setattr(sem, "embed_texts", _explode)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+
+    scores = sem.score_neural("query", results(), make_config(embedding=True, model=""))
+
+    assert scores == [None, None, None]
+
+
+def test_non_http_url_skips_the_stage(monkeypatch) -> None:
+    monkeypatch.setattr(sem, "embed_texts", _explode)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+
+    scores = sem.score_neural(
+        "query", results(), make_config(embedding=True, url="not-a-url")
+    )
+
+    assert scores == [None, None, None]
+
+
+def test_config_error_disables_the_stage(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fail(stage, texts, *, query):
+        calls.append(1)
+        raise ProviderError("HTTP 401", status_code=401)
+
+    monkeypatch.setattr(sem, "embed_texts", fail)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+    cfg = make_config(embedding=True)
+
+    assert sem.score_neural("query", results(), cfg) == [None, None, None]
+    assert sem.score_neural("query", results(), cfg) == [None, None, None]
+    assert calls == [1]
+
+
+def test_transient_error_keeps_the_stage_enabled(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fail(stage, texts, *, query):
+        calls.append(1)
+        raise ProviderError("HTTP 503", status_code=503)
+
+    monkeypatch.setattr(sem, "embed_texts", fail)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+    cfg = make_config(embedding=True)
+
+    sem.score_neural("query", results(), cfg)
+    sem.score_neural("query", results(), cfg)
+
+    assert len(calls) == 2
+
+
+def test_changed_config_resets_the_disable(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def fail(stage, texts, *, query):
+        calls.append(1)
+        raise ProviderError("HTTP 401", status_code=401)
+
+    monkeypatch.setattr(sem, "embed_texts", fail)
+    monkeypatch.setattr(sem, "rerank_documents", _explode)
+
+    sem.score_neural("query", results(), make_config(embedding=True))
+    sem.score_neural(
+        "query",
+        results(),
+        make_config(embedding=True, url="https://example.test/other"),
+    )
+
+    assert len(calls) == 2
 
 
 def test_embedding_cache_avoids_a_second_request(monkeypatch) -> None:

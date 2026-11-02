@@ -1,0 +1,21 @@
+services:
+  searxng:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        BM25_VERSION: ${BM25_VERSION:-}
+        SEM_VERSION: ${SEM_VERSION:-}
+    image: oaklight/searxng:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080/}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me}
+    # Lets the container reach a vLLM or llama.cpp server on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

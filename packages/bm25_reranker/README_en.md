@@ -2,7 +2,7 @@
 
 **English** | [中文](README_zh.md)
 
-[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/searxng-bm25-reranker?color=green)](https://pypi.org/project/searxng-bm25-reranker/)
 [![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-bm25-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-bm25-reranker/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
@@ -98,18 +98,23 @@ docker compose up -d
 ## Configuration
 
 The plugin works out of the box with no additional configuration. Every value below can be
-overridden per instance in `settings.yml` in a top-level block keyed by the plugin id; all
-must be numbers `>= 1`, and `rrf_k` must be a whole number.
+overridden per instance in `settings.yml` in a top-level block keyed by the plugin id.
+Weights must be numbers `>= 0`; `rrf_k` must be a whole number `>= 1`.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `title_weight` | `2.0` | BM25F weight for the title field |
 | `content_weight` | `1.0` | BM25F weight for the content field |
+| `url_weight` | `0.5` | BM25F weight for the host and path field |
 | `rrf_k` | `20` | RRF fusion constant |
 | `engine_weight` | `1.0` | Weight of the original engine ranking in the fusion |
 | `bm25_weight` | `1.0` | Weight of the BM25 ranking in the fusion |
 
 Fixed and not exposed: Okapi BM25 with `k1=1.5`, `b=0.75`, `delta=0`.
+
+The `url` field indexes the host and path only. Scheme, query string, and fragment are
+dropped, and percent escapes are decoded. A slug such as `/python/asyncio` can match
+without adding tracking-parameter noise. Set `url_weight` to `0` to ignore URLs.
 
 `rrf_k` defaults to 20 rather than the Cormack et al. value of 60 because that constant was
 tuned on retrieval runs with thousands of candidates, while a SearXNG page holds roughly 30

@@ -15,6 +15,17 @@ from ._vendor import httpclient, retry
 class ProviderError(Exception):
     """A provider request failed; the caller keeps the previous ranking."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+
 
 def embed(
     stage: StageConfig,
@@ -189,10 +200,11 @@ def post_json(
         raise
     except httpclient.HTTPError as exc:
         raise ProviderError(
-            f"HTTP {exc.status_code} from {url}: {_excerpt(exc.body)}"
+            f"HTTP {exc.status_code} from {url}: {_excerpt(exc.body)}",
+            status_code=exc.status_code,
         ) from exc
     except (httpclient.HttpClientError, ValueError, OSError) as exc:
-        raise ProviderError(f"request to {url} failed: {exc}") from exc
+        raise ProviderError(f"request to {url} failed: {exc}", retryable=True) from exc
 
 
 def _retryable(exc: BaseException) -> bool:

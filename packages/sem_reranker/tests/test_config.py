@@ -18,6 +18,9 @@ def test_defaults_keep_both_stages_off() -> None:
     assert cfg.embedding.format == ""
     assert cfg.embedding.url == ""
     assert cfg.embedding.model == ""
+    assert cfg.embedding.max_tokens == 0
+    assert cfg.embedding.query_prefix == ""
+    assert cfg.embedding.document_prefix == ""
     assert cfg.rerank.enabled is False
     assert cfg.rerank.format == ""
     assert cfg.rerank.top_k == 10
@@ -54,6 +57,24 @@ def test_stages_are_explicit_and_independent() -> None:
     assert cfg.embedding.api_key_env == "EMBED_KEY"
     assert cfg.rerank.api_key_env == "RERANK_KEY"
     assert cfg.rerank.top_k == 5
+
+
+def test_embedding_prefixes_and_token_budget() -> None:
+    cfg = load_config(
+        {
+            "sem_reranker": {
+                "embedding": {
+                    "query_prefix": "query: ",
+                    "document_prefix": "passage: ",
+                    "max_tokens": 512,
+                }
+            }
+        }
+    )
+    assert cfg.embedding.query_prefix == "query: "
+    assert cfg.embedding.document_prefix == "passage: "
+    assert cfg.embedding.max_tokens == 512
+    assert cfg.rerank.max_tokens == 0
 
 
 def test_environment_key_wins_per_stage(monkeypatch) -> None:
@@ -107,6 +128,7 @@ def test_invalid_values_fall_back_to_neutral_defaults() -> None:
                     "url": "ftp://example.com",
                     "top_k": -1,
                     "max_chars": 0,
+                    "max_tokens": -1,
                     "timeout_ms": 0,
                     "weight": -1,
                 },
@@ -119,6 +141,7 @@ def test_invalid_values_fall_back_to_neutral_defaults() -> None:
     assert cfg.rerank.url == ""
     assert cfg.rerank.top_k == 10
     assert cfg.rerank.max_chars == 4000
+    assert cfg.rerank.max_tokens == 0
     assert cfg.rerank.timeout_ms == 3000
     assert cfg.rerank.weight == 1.0
     assert cfg.fusion.rrf_k == 20

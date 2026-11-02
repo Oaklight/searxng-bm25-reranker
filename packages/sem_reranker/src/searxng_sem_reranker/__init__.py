@@ -9,14 +9,16 @@ Runtime code uses only the standard library and vendored zerodep modules.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev1"
 
 import hashlib
 import html as html_lib
 import logging
 import re
 import threading
+import time
 import typing as t
+import urllib.parse
 
 from ._config import Config, StageConfig, load_config
 from ._providers import ProviderError
@@ -30,11 +32,18 @@ __all__ = ["score_neural", "rank_by_score"]
 logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"</?[a-zA-Z](?:[^>\"']|\"[^\"]*\"|'[^']*')*>")
+_SPACE_RUN_RE = re.compile(r"[ \t]+")
+_CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]")
 
 _CACHE_LOCK = threading.Lock()
 _EMBED_CACHE: TTLCache | None = None
 _RERANK_CACHE: TTLCache | None = None
 _CACHE_SHAPE: tuple[int, int] | None = None
+
+_STATE_LOCK = threading.Lock()
+_DISABLED: dict[str, float] = {}
+_DISABLE_SECONDS = 300.0
+_CONFIG_ERROR_STATUS = frozenset({400, 401, 403, 404, 405, 422})
 
 
 def __getattr__(name: str) -> t.Any:
@@ -91,10 +100,14 @@ def _apply_rerank(
     if not candidates:
         return
 
-    documents = [texts[index][: cfg.rerank.max_chars] for index in candidates]
+    documents = [
+        _clip(texts[index], cfg.rerank.max_chars, cfg.rerank.max_tokens)
+        for index in candidates
+    ]
     try:
         rerank_scores = _cached_rerank(cfg, query, documents)
     except ProviderError as exc:
+        _note_failure(cfg.rerank, "rerank", exc)
         logger.warning("Rerank request failed: %s", exc)
         return
 
@@ -119,6 +132,7 @@ def _embedding_scores(
     try:
         vectors = _cached_embeddings(cfg, query, texts)
     except ProviderError as exc:
+        _note_failure(cfg.embedding, "embedding", exc)
         logger.warning("Embedding request failed: %s", exc)
         return None
 
@@ -141,6 +155,33 @@ def _embedding_scores(
     return scores
 
 
+def _clip(text: str, max_chars: int, max_tokens: int) -> str:
+    """Bound text by a token estimate first, then by a hard character cap."""
+    if max_tokens > 0:
+        text = _truncate_tokens(text, max_tokens)
+    return text[:max_chars]
+
+
+def _truncate_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to roughly ``max_tokens`` with a script-aware estimate.
+
+    Latin text is estimated at four characters per token, CJK text at one
+    character per token. The cut lands on a whitespace boundary when one is
+    available, so a word is not split in half.
+    """
+    if not text or max_tokens <= 0:
+        return text
+    text = _SPACE_RUN_RE.sub(" ", text)
+    budget = max_tokens if _CJK_RE.search(text) else max_tokens * 4
+    if len(text) <= budget:
+        return text
+    cut = text[:budget]
+    boundary = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+    if boundary > budget // 2:
+        cut = cut[:boundary]
+    return cut
+
+
 def _cached_embeddings(
     cfg: Config,
     query: str,
@@ -149,8 +190,11 @@ def _cached_embeddings(
     """Embed the query and documents, reusing cached vectors per text."""
     stage = cfg.embedding
     cache, _ = _caches(cfg)
-    query = query[: stage.max_chars]
-    clipped = [text[: stage.max_chars] for text in texts]
+    query = _clip(f"{stage.query_prefix}{query}", stage.max_chars, stage.max_tokens)
+    clipped = [
+        _clip(f"{stage.document_prefix}{text}", stage.max_chars, stage.max_tokens)
+        for text in texts
+    ]
     nonempty = [index for index, text in enumerate(clipped) if text]
 
     vectors: list[list[float] | None] = [None] * (len(texts) + 1)
@@ -200,7 +244,7 @@ def _cached_rerank(
 ) -> list[float | None]:
     stage = cfg.rerank
     _, cache = _caches(cfg)
-    query = query[: stage.max_chars]
+    query = _clip(query, stage.max_chars, stage.max_tokens)
     keys = [_rerank_key(stage, query, document) for document in documents]
 
     with _CACHE_LOCK:
@@ -247,6 +291,20 @@ def _rerank_key(stage: StageConfig, query: str, document: str) -> str:
 
 
 def _usable(stage: StageConfig, name: str) -> bool:
+    if not stage.enabled:
+        return False
+
+    key = _stage_fingerprint(stage)
+    with _STATE_LOCK:
+        until = _DISABLED.get(key)
+        if until is not None:
+            if time.monotonic() < until:
+                logger.debug(
+                    "sem_reranker.%s is disabled after a configuration error", name
+                )
+                return False
+            _DISABLED.pop(key, None)
+
     if not stage.format:
         logger.warning(
             "sem_reranker.%s.format is unset or invalid; stage skipped", name
@@ -254,6 +312,16 @@ def _usable(stage: StageConfig, name: str) -> bool:
         return False
     if not stage.url:
         logger.warning("sem_reranker.%s.url is empty; stage skipped", name)
+        return False
+    if not stage.model:
+        logger.warning("sem_reranker.%s.model is empty; stage skipped", name)
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(stage.url)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.scheme not in ("http", "https") or not parsed.hostname:
+        logger.warning("sem_reranker.%s.url is not an HTTP URL; stage skipped", name)
         return False
     if stage.api_key_env and not stage.resolve_key():
         logger.warning(
@@ -263,6 +331,30 @@ def _usable(stage: StageConfig, name: str) -> bool:
         )
         return False
     return True
+
+
+def _stage_fingerprint(stage: StageConfig) -> str:
+    """Identify one stage configuration, including a changed key."""
+    key_hash = hashlib.sha256(stage.resolve_key().encode("utf-8")).hexdigest()
+    raw = "\0".join((stage.format, stage.url, stage.model, stage.api_key_env, key_hash))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _note_failure(stage: StageConfig, name: str, exc: ProviderError) -> None:
+    """Disable a stage after a configuration error (bad key, URL, or model)."""
+    if exc.retryable:
+        return
+    if exc.status_code is not None and exc.status_code not in _CONFIG_ERROR_STATUS:
+        return
+    key = _stage_fingerprint(stage)
+    with _STATE_LOCK:
+        _DISABLED[key] = time.monotonic() + _DISABLE_SECONDS
+    logger.warning(
+        "sem_reranker.%s disabled for %ss after HTTP %s",
+        name,
+        int(_DISABLE_SECONDS),
+        exc.status_code,
+    )
 
 
 def _bm25_scores(

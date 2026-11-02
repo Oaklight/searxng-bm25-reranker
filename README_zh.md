@@ -1,5 +1,15 @@
 # SearXNG Rerankers
 
+[English](README.md) | **中文**
+
+[![PyPI bm25](https://img.shields.io/pypi/v/searxng-bm25-reranker?color=green&label=PyPI%20bm25)](https://pypi.org/project/searxng-bm25-reranker/)
+[![PyPI sem](https://img.shields.io/pypi/v/searxng-sem-reranker?color=green&label=PyPI%20sem)](https://pypi.org/project/searxng-sem-reranker/)
+[![TestPyPI bm25](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-bm25-reranker%2Fjson&query=%24.info.version&label=TestPyPI%20bm25&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-bm25-reranker/)
+[![TestPyPI sem](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI%20sem&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
+[![Docker](https://img.shields.io/docker/pulls/oaklight/searxng?label=Docker%20pulls)](https://hub.docker.com/r/oaklight/searxng)
+
 两个相互独立的 SearXNG 重排序插件。它们放在同一个仓库里，可以单独安装，也可以同时启用并协同工作。
 
 | 包 | 发行名 | 插件 id | 信号 |
@@ -35,21 +45,22 @@ plugins:
 
 bm25_reranker:
   rrf_k: 20
+  url_weight: 0.5
 
 sem_reranker:
   embedding:
     enabled: false            # 可选；启用后加入向量相似度
     format: openai
-    url: https://api.siliconflow.cn/v1/embeddings
+    url: http://localhost:8000/v1/embeddings
     model: BAAI/bge-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""           # 本地服务使用 --api-key 时再设置
 
   rerank:
     enabled: true             # 可选；启用后加入交叉编码器重排序
     format: jina
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""           # 本地服务使用 --api-key 时再设置
     top_k: 10
     timeout_ms: 3000
 
@@ -58,7 +69,8 @@ rerankers:
 ```
 
 两个阶段都是可选的。示例只启用 rerank；embedding 默认关闭。设置
-`embedding.enabled: true` 可加入向量相似度。每个阶段都有自己的 `format`、
+`embedding.enabled: true` 可加入向量相似度。embedding 还支持 `query_prefix`、
+`document_prefix` 和 `max_tokens`。每个阶段都有自己的 `format`、
 `url`、`api_key_env` 和 `api_key`。embedding 与 rerank 可以使用不同主机和不同密钥。
 完整配置见 [sem_reranker README](packages/sem_reranker/README_zh.md)。
 

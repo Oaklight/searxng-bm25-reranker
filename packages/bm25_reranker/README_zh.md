@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/searxng-bm25-reranker?color=green)](https://pypi.org/project/searxng-bm25-reranker/)
 [![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-bm25-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-bm25-reranker/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
@@ -97,17 +97,20 @@ docker compose up -d
 
 ## 配置
 
-插件开箱即用，无需额外配置。以下参数均可在 `settings.yml` 中以插件 id 为键的顶层配置块按实例覆盖，取值须为不小于 1 的数字，`rrf_k` 还须为整数。
+插件开箱即用，无需额外配置。以下参数均可在 `settings.yml` 中以插件 id 为键的顶层配置块按实例覆盖。权重须为不小于 0 的数字；`rrf_k` 须为不小于 1 的整数。
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `title_weight` | `2.0` | 标题字段 BM25F 权重 |
 | `content_weight` | `1.0` | 正文字段 BM25F 权重 |
+| `url_weight` | `0.5` | 主机名与路径字段的 BM25F 权重 |
 | `rrf_k` | `20` | RRF 融合常数 |
 | `engine_weight` | `1.0` | 引擎原始排名在融合中的权重 |
 | `bm25_weight` | `1.0` | BM25 排名在融合中的权重 |
 
 固定且不暴露：Okapi BM25，`k1=1.5`、`b=0.75`、`delta=0`。
+
+`url` 字段只索引主机名和路径。scheme、查询字符串和 fragment 会被去掉，百分号转义会被解码。这样 `/python/asyncio` 这类 slug 可以命中，又不会引入跟踪参数噪声。把 `url_weight` 设为 `0` 可忽略 URL。
 
 `rrf_k` 默认为 20 而非 Cormack 等人的 60，因为 60 是在候选量达数千条的检索任务上调优的，
 而 SearXNG 单页结果只有约 30 条。在 k=60 时第 1 名与第 30 名的差距被压缩到 1.48 倍，

@@ -2,7 +2,7 @@
 
 [English](README.md) | **中文**
 
-[![GitHub release](https://img.shields.io/github/v/release/Oaklight/searxng-bm25-reranker?color=green)](https://github.com/Oaklight/searxng-bm25-reranker/releases/latest)
+[![PyPI](https://img.shields.io/pypi/v/searxng-sem-reranker?color=green)](https://pypi.org/project/searxng-sem-reranker/)
 [![TestPyPI](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Fsearxng-sem-reranker%2Fjson&query=%24.info.version&label=TestPyPI&color=blue&logo=pypi&logoColor=white)](https://test.pypi.org/project/searxng-sem-reranker/)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python](https://img.shields.io/badge/Python-≥3.10-blue.svg)](https://www.python.org/)
@@ -12,9 +12,9 @@
 SearXNG 外部插件。它用远程向量模型、远程交叉编码器，或两者同时，对搜索结果重排序。模型托管与 SearXNG 进程分离：插件只需要 API 地址、密钥和模型名。
 
 - **两个独立阶段** — 向量相似度与交叉编码器重排序；默认都关闭。
-- **多种 API 格式** — 支持 OpenAI、Cohere、Jina、Voyage 的请求与响应格式，以及 SiliconFlow 预设。
+- **多种 API 格式** — 支持 OpenAI、Cohere、Jina、Voyage 的请求与响应格式。
 - **无运行时依赖** — HTTP、缓存、重试、余弦相似度和 RRF 都来自复制到本地的 [zerodep](https://github.com/Oaklight/zerodep) 模块。
-- **安全回退** — 提供方超时或报错时保留原来的排序。
+- **安全回退** — 非法或空的 stage 配置会被跳过；提供方报错时保留原来的排序。
 - **可单独使用，也可与 `bm25_reranker` 协同** — 由一个协调者融合引擎顺序、BM25 和向量分数。
 
 ## 安装
@@ -34,9 +34,9 @@ sem_reranker:
   rerank:
     enabled: true
     format: jina
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # 本地服务使用 --api-key 时再设置
     top_k: 10
     timeout_ms: 3000
 ```
@@ -52,20 +52,23 @@ sem_reranker:
   embedding:
     enabled: false                 # 可选；设为 true 启用此阶段
     format: openai                 # openai | cohere | jina | voyage
-    url: https://api.siliconflow.cn/v1/embeddings
+    url: http://localhost:8000/v1/embeddings
     model: BAAI/bge-m3             # 或 Qwen/Qwen3-Embedding-0.6B（32k）
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # 本地服务使用 --api-key 时再设置
     api_key: ""
     weight: 1.0
     max_chars: 4000
+    max_tokens: 0                  # 0 表示不限制；建议 512
+    query_prefix: ""               # 例如 "query: "
+    document_prefix: ""            # 例如 "passage: "
     timeout_ms: 3000
 
   rerank:
     enabled: false                 # 可选；设为 true 启用此阶段
     format: jina                   # jina | cohere | voyage
-    url: https://api.siliconflow.cn/v1/rerank
+    url: http://localhost:8000/v1/rerank
     model: BAAI/bge-reranker-v2-m3 # 或 Qwen/Qwen3-Reranker-0.6B（32k）
-    api_key_env: SILICONFLOW_API_KEY
+    api_key_env: ""                # 本地服务使用 --api-key 时再设置
     api_key: ""
     top_k: 10
     weight: 1.0
@@ -83,6 +86,8 @@ sem_reranker:
     max_entries: 512
 ```
 
+`query_prefix` 和 `document_prefix` 只作用于 embedding 阶段。模型需要指令前缀时设置它们。`max_tokens` 用按字符脚本估算的预算限制 embedding 输入；`0` 表示不限制，只使用 `max_chars`。
+
 密钥先从 `api_key_env` 读取，再回退到 `api_key`。密钥不会写入日志。也可以直接设置密钥：把 `api_key_env` 留空，把密钥写进 `api_key`：
 
 ```yaml
@@ -94,6 +99,12 @@ sem_reranker:
 如果 `settings.yml` 会被多人读取，优先使用环境变量，因为任何能读文件的人都能读到明文密钥。
 
 没有提供方预设：每个阶段字段都必须显式写出。
+
+### 失败兜底
+
+以下情况跳过 stage：`enabled` 为 false；`format`、`url` 或 `model` 缺失或非法；`api_key_env` 指向未设置的变量。返回 400、401、403、404、405、422，或返回体格式错误时，该 stage 停用 5 分钟。修改 URL、模型或密钥会重置停用状态。超时、429 和 5xx 视为临时故障，下一次请求会重试。没有可用 stage 时，`score_neural` 只返回 `None`，协调者保留 BM25 或引擎顺序。
+
+示例使用 `localhost:8000` 上的 vLLM 服务。llama.cpp 的服务在 `localhost:8080` 提供相同路径；embedding 用 `--embeddings` 启动，rerank 用 `--reranking` 启动。
 
 `embedding` 与 `rerank` 相互独立。两者可以使用不同的 `format`、`url`、`model`、`api_key_env` 和 `api_key`。`url` 是完整端点。
 
@@ -118,7 +129,7 @@ sem_reranker:
 
 ### 示例模型
 
-下列模型由 SiliconFlow 提供。配置的端点支持的任何模型都可以使用。
+下列模型可由 vLLM、llama.cpp 或托管服务提供。配置的端点支持的任何模型都可以使用。
 
 | 阶段 | 模型 | 上下文 |
 | --- | --- | --- |
