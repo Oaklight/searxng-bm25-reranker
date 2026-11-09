@@ -1,5 +1,5 @@
 # /// zerodep
-# version = "0.6.2"
+# version = "0.7.3"
 # deps = []
 # tier = "subsystem"
 # category = "network"
@@ -31,6 +31,40 @@ Session usage::
 
     async with AsyncClient() as client:
         r = await client.get("https://httpbin.org/get")
+
+Redirects:
+    ``Authorization``, ``Proxy-Authorization`` and ``Cookie`` are bound to
+    the origin that received them.  A redirect to a different scheme, host
+    or port -- including an ``https`` → ``http`` downgrade -- drops them
+    before the next hop.  They stay dropped if a later hop returns to the
+    original origin, because the redirect chain keeps one header set.
+    Digest auth is disabled at the same time, so a 401 challenge from a new
+    origin cannot harvest the configured username and password.
+
+    Set ``follow_redirects=False`` (on a client or a single request) to
+    receive the first 3xx response unchanged: status, headers -- including
+    ``Location`` -- and body as received, with no connection to the target
+    opened.  The caller can validate the next hop and issue its own request.
+    This differs from ``max_redirects=0``, which raises
+    :class:`TooManyRedirects` and exposes neither the response nor its
+    ``Location``.  The rule covers ``stream=True`` responses (the 3xx is
+    returned unread; drain or close it before the connection returns to the
+    pool) and a redirect reached after a Digest-auth retry.  The default
+    follows redirects up to ``max_redirects``.
+
+Address pinning:
+    ``resolve_to`` lets a caller that has already validated a name's
+    addresses pin the TCP peer to one of them (or try several in order)
+    while the URL host still provides the ``Host`` header, TLS SNI and
+    certificate verification.  It exists for DNS-rebinding protection: the
+    caller resolves and checks the address, and this module connects to it
+    without resolving again.  The caller owns the policy.  Each entry must
+    be an IP literal: a hostname is refused with ``ValueError`` because the
+    socket layer would resolve it, silently turning the pin back into a
+    normal lookup.  ``resolve_to`` cannot be combined with ``proxy`` --
+    the proxy resolves the name, so the pin would be unenforceable -- and a
+    redirect that changes scheme, host or port drops the pin for the rest
+    of the chain.
 """
 
 # ── Imports ──
@@ -42,6 +76,7 @@ import base64
 import hashlib
 import http.client
 import http.cookies
+import ipaddress
 import json as _json
 import logging
 import os
@@ -54,9 +89,9 @@ import time
 import warnings
 import weakref
 import zlib
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import IO, Any
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 __all__ = [
     # Constants
@@ -72,6 +107,8 @@ __all__ = [
     "TooManyRedirects",
     "HttpConnectionError",
     "HttpTimeoutError",
+    "ResponseTooLargeError",
+    "DecompressionError",
     "Socks5Error",
     # Data structures
     "CaseInsensitiveDict",
@@ -112,6 +149,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_REDIRECTS = 10
+
+#: Request headers that are scoped to the origin that received them.
+#: A cross-origin redirect drops these before the next hop, so a caller's
+#: bearer token, basic credentials, or session cookie cannot be replayed to
+#: a different scheme, host or port (including an ``https`` → ``http``
+#: downgrade).  The names are lower-case because header lookups are
+#: case-insensitive.
+_REDIRECT_CREDENTIAL_HEADERS = (
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+)
+
 DEFAULT_USER_AGENT = "zerodep-http/0.1"
 DEFAULT_POOL_SIZE = 10
 DEFAULT_POOL_IDLE_TIMEOUT = 60.0
@@ -342,6 +392,46 @@ class HttpTimeoutError(HttpClientError):
 # Backward-compatible aliases (deprecated: prefer HttpConnectionError/HttpTimeoutError)
 ConnectionError = HttpConnectionError  # noqa: A001
 TimeoutError = HttpTimeoutError  # noqa: A001
+
+
+class ResponseTooLargeError(HttpClientError):
+    """Raised when a response body exceeds the configured size limit.
+
+    Attributes:
+        url: The URL whose response exceeded the limit.
+        max_size: The configured limit, in bytes.
+        declared: The ``Content-Length`` the server declared, or ``None``
+            when the body was chunked or EOF-delimited.
+        received: Body bytes charged against the limit when it was enforced:
+            the wire bytes read for an undeclared body, the decompressed
+            bytes when decompression crossed the cap, or -- when the async
+            chunked reader refuses a frame from its size line -- the total
+            that frame would have produced.  ``0`` when a declared length was
+            refused before any body byte was read.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        max_size: int,
+        *,
+        declared: int | None = None,
+        received: int = 0,
+    ) -> None:
+        self.url = url
+        self.max_size = max_size
+        self.declared = declared
+        self.received = received
+        super().__init__(f"Response body from {url} exceeds the {max_size}-byte limit")
+
+
+class DecompressionError(HttpClientError):
+    """Raised when a response body is not a complete compressed stream.
+
+    A truncated gzip or deflate body would otherwise decode to a prefix of
+    the real content, which is worse than failing: the caller cannot tell
+    the result apart from a complete one.
+    """
 
 
 class Socks5Error(HttpConnectionError):
@@ -624,24 +714,132 @@ def _parse_digest_challenge(header_value: str) -> dict[str, str]:
 # ── Compression / Encoding helpers ──
 
 
-def _decompress_body(body: bytes, encoding: str) -> bytes:
+def _decompress_body(
+    body: bytes,
+    encoding: str,
+    *,
+    max_size: int | None = None,
+    url: str = "",
+) -> bytes:
     """Decompress a response body based on Content-Encoding.
+
+    A gzip body may concatenate several members.  They are one stream and
+    every member is decoded; ``max_size`` bounds their combined output.
 
     Args:
         body: The raw response body bytes.
         encoding: The Content-Encoding value.
+        max_size: Optional cap on the decompressed size, in bytes.  The wire
+            bytes may be well under the cap while the expanded body is not,
+            so a compressed bomb is refused here too.
+        url: Response URL, used in the size error.
 
     Returns:
         Decompressed bytes, or original body if encoding is unsupported.
+
+    Raises:
+        ResponseTooLargeError: If the decompressed body exceeds *max_size*.
+        DecompressionError: If the stream is truncated or otherwise does not
+            decode completely.
     """
+    if encoding not in ("gzip", "x-gzip", "deflate"):
+        return body
+
     if encoding in ("gzip", "x-gzip"):
-        return zlib.decompress(body, 16 + zlib.MAX_WBITS)
-    if encoding == "deflate":
+        return _decompress_gzip_members(body, max_size=max_size, url=url)
+
+    # ``max_length=0`` tells zlib to apply no limit.
+    max_length = max_size + 1 if max_size is not None else 0
+    # Some servers send a zlib-wrapped stream under "deflate"; try the
+    # wrapped form when the raw attempt rejects the bytes.
+    decompressors: list[zlib._Decompress] = [
+        zlib.decompressobj(-zlib.MAX_WBITS),
+        zlib.decompressobj(),
+    ]
+
+    last_error: zlib.error | None = None
+    for decompressor in decompressors:
         try:
-            return zlib.decompress(body, -zlib.MAX_WBITS)
-        except zlib.error:
-            return zlib.decompress(body)
-    return body
+            out = decompressor.decompress(body, max_length)
+        except zlib.error as exc:
+            last_error = exc
+            continue
+        if max_size is not None and len(out) > max_size:
+            raise ResponseTooLargeError(url, max_size, received=len(out))
+        try:
+            # A stream that only fails at flush must still try the
+            # zlib-wrapped deflate fallback.
+            out += decompressor.flush()
+        except zlib.error as exc:
+            last_error = exc
+            continue
+        if max_size is not None and len(out) > max_size:
+            raise ResponseTooLargeError(url, max_size, received=len(out))
+        if not decompressor.eof:
+            # The stream ended before its final block: fail rather than
+            # return a prefix of the real body.
+            last_error = zlib.error("incomplete or truncated compressed stream")
+            continue
+        return out
+    raise DecompressionError(
+        f"Incomplete or truncated {encoding} response body from {url}"
+    ) from last_error
+
+
+def _decompress_gzip_members(
+    body: bytes,
+    *,
+    max_size: int | None = None,
+    url: str = "",
+) -> bytes:
+    """Decode every member of a concatenated gzip stream.
+
+    ``zlib.decompressobj`` stops at the end of the first member and keeps
+    the bytes that follow in ``unused_data``.  RFC 1952 allows a gzip stream
+    to carry any number of members, and a response assembled from several
+    compressed parts relies on every one being decoded.
+
+    Args:
+        body: The raw response body bytes.
+        max_size: Optional cap on the total decompressed size.  The budget
+            spans all members, so several small members cannot combine past
+            it.
+        url: Response URL, used in the size error.
+
+    Returns:
+        The concatenation of every member's decompressed content.
+
+    Raises:
+        ResponseTooLargeError: If the total decompressed body exceeds
+            *max_size*.
+        DecompressionError: If a member is truncated or does not decode.
+    """
+    message = f"Incomplete or truncated gzip response body from {url}"
+    out = bytearray()
+    data = body
+    while True:
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        # Leave room for one byte past the budget, so crossing it is visible.
+        max_length = 0 if max_size is None else max_size - len(out) + 1
+        if max_size is not None and max_length <= 0:
+            raise ResponseTooLargeError(url, max_size, received=len(out) + 1)
+        try:
+            out += decompressor.decompress(data, max_length)
+        except zlib.error as exc:
+            raise DecompressionError(message) from exc
+        if max_size is not None and len(out) > max_size:
+            raise ResponseTooLargeError(url, max_size, received=len(out))
+        try:
+            out += decompressor.flush()
+        except zlib.error as exc:
+            raise DecompressionError(message) from exc
+        if max_size is not None and len(out) > max_size:
+            raise ResponseTooLargeError(url, max_size, received=len(out))
+        if not decompressor.eof:
+            raise DecompressionError(message)
+        data = decompressor.unused_data
+        if not data:
+            return bytes(out)
 
 
 def _make_decompressor(encoding: str) -> zlib._Decompress | None:
@@ -850,6 +1048,33 @@ class StreamingResponse:
 
     # ── Sync iteration ──
 
+    def _decompress_chunk(self, chunk: bytes) -> bytes:
+        """Expand *chunk* and continue past gzip member boundaries.
+
+        A ``decompressobj`` stops at the end of the first member and keeps
+        the following bytes in ``unused_data``.  A gzip stream may carry
+        several members, so each boundary starts a fresh decompressor for
+        the rest of the bytes.  Non-gzip encodings keep one member.
+        """
+        decompressor = self._decompressor
+        if decompressor is None:
+            return chunk
+        out = bytearray()
+        while True:
+            out += decompressor.decompress(chunk)
+            if not decompressor.eof:
+                return bytes(out)
+            chunk = decompressor.unused_data
+            if not chunk:
+                return bytes(out)
+            encoding = self.headers.get("content-encoding", "").lower()
+            if encoding not in ("gzip", "x-gzip"):
+                return bytes(out)
+            decompressor = _make_decompressor(encoding)
+            if decompressor is None:
+                return bytes(out)
+            self._decompressor = decompressor
+
     def iter_bytes(self, chunk_size: int = 4096) -> Iterator[bytes]:
         """Yield response body in chunks as soon as they arrive.
 
@@ -873,9 +1098,7 @@ class StreamingResponse:
                 if not chunk:
                     break
                 self._sync_received = getattr(self, "_sync_received", 0) + len(chunk)
-                if self._decompressor:
-                    chunk = self._decompressor.decompress(chunk)
-                yield chunk
+                yield self._decompress_chunk(chunk)
             if self._decompressor:
                 remaining = self._decompressor.flush()
                 if remaining:
@@ -919,9 +1142,7 @@ class StreamingResponse:
         try:
             raw_iter = self._select_raw_iterator(chunk_size)
             async for chunk in raw_iter:
-                if self._decompressor:
-                    chunk = self._decompressor.decompress(chunk)
-                yield chunk
+                yield self._decompress_chunk(chunk)
             if self._decompressor:
                 remaining = self._decompressor.flush()
                 if remaining:
@@ -1187,7 +1408,7 @@ class _SyncConnectionPool:
         idle_timeout: float = DEFAULT_POOL_IDLE_TIMEOUT,
     ) -> None:
         self._pool: dict[
-            tuple[str, int, bool],
+            tuple[str, int, bool, bool, tuple[str, ...] | None],
             list[tuple[http.client.HTTPConnection, float]],
         ] = {}
         self._pool_size = pool_size
@@ -1202,6 +1423,7 @@ class _SyncConnectionPool:
         is_https: bool,
         timeout: float,
         verify: bool,
+        resolve_to: tuple[str, ...] | None = None,
     ) -> http.client.HTTPConnection | None:
         """Acquire a connection from the pool if available.
 
@@ -1211,11 +1433,14 @@ class _SyncConnectionPool:
             is_https: Whether the connection uses TLS.
             timeout: Connection timeout.
             verify: Whether to verify TLS certificates.
+            resolve_to: The pinned address list, if any.  It is part of the
+                key so a pinned connection is never handed to an unpinned
+                request, or to a request pinned elsewhere.
 
         Returns:
             A reusable connection or None.
         """
-        key = (host, port, is_https, verify)
+        key = (host, port, is_https, verify, resolve_to)
         now = time.monotonic()
         with self._lock:
             conns = self._pool.get(key, [])
@@ -1249,6 +1474,7 @@ class _SyncConnectionPool:
         conn: http.client.HTTPConnection,
         *,
         verify: bool = True,
+        resolve_to: tuple[str, ...] | None = None,
     ) -> None:
         """Return a connection to the pool.
 
@@ -1260,8 +1486,10 @@ class _SyncConnectionPool:
             verify: Whether the connection verifies TLS certificates.  It is
                 part of the key so a connection built with ``verify=False``
                 is never handed to a verifying request.
+            resolve_to: The pinned address list, if any.  Part of the key for
+                the same reason.
         """
-        key = (host, port, is_https, verify)
+        key = (host, port, is_https, verify, resolve_to)
         with self._lock:
             conns = self._pool.setdefault(key, [])
             if len(conns) < self._pool_size:
@@ -1365,7 +1593,7 @@ class _AsyncConnectionPool:
         idle_timeout: float = DEFAULT_POOL_IDLE_TIMEOUT,
     ) -> None:
         self._pool: dict[
-            tuple[str, int, bool],
+            tuple[str, int, bool, bool, tuple[str, ...] | None],
             list[
                 tuple[
                     asyncio.StreamReader,
@@ -1386,6 +1614,7 @@ class _AsyncConnectionPool:
         is_https: bool,
         timeout: float,
         verify: bool,
+        resolve_to: tuple[str, ...] | None = None,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter] | None:
         """Acquire a connection from the pool if available.
 
@@ -1395,11 +1624,14 @@ class _AsyncConnectionPool:
             is_https: Whether the connection uses TLS.
             timeout: Connection timeout.
             verify: Whether to verify TLS certificates.
+            resolve_to: The pinned address list, if any.  It is part of the
+                key so a pinned connection is never handed to an unpinned
+                request, or to a request pinned elsewhere.
 
         Returns:
             A (reader, writer) tuple or None.
         """
-        key = (host, port, is_https, verify)
+        key = (host, port, is_https, verify, resolve_to)
         now = time.monotonic()
         async with self._lock:
             conns = self._pool.get(key, [])
@@ -1432,6 +1664,7 @@ class _AsyncConnectionPool:
         writer: asyncio.StreamWriter,
         *,
         verify: bool = True,
+        resolve_to: tuple[str, ...] | None = None,
     ) -> None:
         """Return a connection to the pool.
 
@@ -1444,8 +1677,10 @@ class _AsyncConnectionPool:
             verify: Whether the connection verifies TLS certificates.  It is
                 part of the key so an unverified connection is never handed to
                 a verifying request.
+            resolve_to: The pinned address list, if any.  Part of the key for
+                the same reason.
         """
-        key = (host, port, is_https, verify)
+        key = (host, port, is_https, verify, resolve_to)
         async with self._lock:
             conns = self._pool.setdefault(key, [])
             if len(conns) < self._pool_size:
@@ -1964,11 +2199,135 @@ def _prepare_request(
     return url, body, req_headers, auth_obj
 
 
+def _origin(url: str) -> tuple[str, str, int]:
+    """Return the ``(scheme, host, port)`` origin of *url*.
+
+    A URL without a scheme or host produces an empty origin, which never
+    equals a real one.  An unparseable redirect target therefore counts as
+    cross-origin and loses its credentials instead of forwarding them.
+
+    Args:
+        url: Absolute or relative URL.
+
+    Returns:
+        A comparable origin tuple.  Default ports are normalised by
+        :func:`_parse_url`.
+    """
+    scheme, host, port, _, _ = _parse_url(url)
+    return scheme.lower(), host.lower(), port
+
+
+#: A caller-supplied address, or ordered list of addresses, to connect to
+#: while the URL host keeps providing ``Host``, TLS SNI and certificate
+#: verification.
+ResolveTo = str | Sequence[str] | None
+
+
+def _normalize_resolve_to(resolve_to: ResolveTo) -> tuple[str, ...] | None:
+    """Normalize ``resolve_to`` to an ordered tuple of IP addresses.
+
+    Args:
+        resolve_to: ``None``, one address, or a sequence of addresses.  A
+            single string is accepted for convenience.
+
+    Returns:
+        ``None`` when no pin was requested, otherwise a non-empty tuple.
+        The caller is responsible for choosing acceptable addresses; this
+        module does not re-check the policy (see #305).
+
+    Raises:
+        ValueError: If the sequence is empty, or an entry is not an IP
+            address.  A hostname entry would be resolved by the socket
+            layer, silently downgrading the pin to a normal lookup, which is
+            the behaviour this option exists to prevent.
+    """
+    if resolve_to is None:
+        return None
+    if isinstance(resolve_to, str):
+        addresses = (resolve_to,)
+    else:
+        addresses = tuple(resolve_to)
+    if not addresses:
+        raise ValueError("resolve_to must contain at least one address")
+    normalized = tuple(str(address) for address in addresses)
+    for address in normalized:
+        try:
+            ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ValueError(
+                f"resolve_to entry {address!r} is not an IP address"
+            ) from exc
+    return normalized
+
+
+def _reject_proxy_with_resolve_to(resolve_to: object, proxy: str | None) -> None:
+    """Reject address pinning through a proxy, which resolves the name itself.
+
+    The check runs on the raw value, before normalization, so an empty
+    address list is refused on the same terms as a populated one: the
+    behaviour must not depend on the list's contents.
+
+    Args:
+        resolve_to: The caller's ``resolve_to`` value.
+        proxy: The configured proxy URL, or ``None``.
+
+    Raises:
+        ValueError: If both are set.  A proxy resolves the destination host,
+            so the client cannot enforce the pinned address; this fails
+            closed instead of reporting a guarantee it does not provide.
+    """
+    if resolve_to is not None and proxy is not None:
+        raise ValueError(
+            "resolve_to cannot be combined with proxy: the proxy resolves "
+            "the destination host, so the client cannot enforce the pinned "
+            "address"
+        )
+
+
+def _redact_pinned(text: str, addresses: Sequence[str] | None, host: str) -> str:
+    """Remove pinned addresses from an error message.
+
+    A transport error may embed the address it failed to reach.  The caller
+    supplied that address and already knows it, but the message is the wrong
+    place for it: it can end up in a log or an HTTP error body.  An address
+    equal to the URL host is left alone -- that is the host the message
+    already names, not leaked pin material.
+    """
+    if not addresses:
+        return text
+    for address in addresses:
+        if address == host:
+            continue
+        text = text.replace(address, "<pinned>")
+    return text
+
+
+def _strip_redirect_credentials(
+    req_headers: CaseInsensitiveDict, source_url: str, target_url: str
+) -> None:
+    """Drop credential headers when a redirect changes origin.
+
+    ``Authorization``, ``Proxy-Authorization`` and ``Cookie`` are scoped to
+    the origin that received them.  Sending them to a different scheme,
+    host or port leaks the caller's credentials, so the next hop starts
+    without them.
+
+    Args:
+        req_headers: Headers for the redirect chain; mutated in place.
+        source_url: URL of the request that produced the redirect.
+        target_url: Resolved redirect target.
+    """
+    if _origin(source_url) == _origin(target_url):
+        return
+    for name in _REDIRECT_CREDENTIAL_HEADERS:
+        req_headers.pop(name, None)
+
+
 def _compute_redirect(
     status: int,
     method: str,
     body: bytes | None,
-    req_headers: dict[str, str],
+    req_headers: CaseInsensitiveDict,
     resp_headers: dict[str, str],
     scheme: str,
     host: str,
@@ -1977,22 +2336,31 @@ def _compute_redirect(
     redirects: int,
     max_redirects: int,
 ) -> tuple[str, str, bytes | None]:
-    """Compute redirect target and adjust method/body.
+    """Compute the redirect target and adjust method, body and headers.
+
+    Resolves relative ``Location`` values, converts the method for 303 and
+    POST-on-301/302 redirects, and removes credential headers when the
+    target origin differs from the current one.
 
     Raises:
         TooManyRedirects: If redirect limit exceeded.
 
     Returns:
-        (new_url, new_method, new_body).
+        (new_url, new_method, new_body).  *req_headers* is modified in
+        place.
     """
     redirects_now = redirects + 1
     if redirects_now > max_redirects:
         raise TooManyRedirects(url, max_redirects)
     location = resp_headers["location"]
-    if location.startswith("/"):
+    if location.startswith("//"):
+        # Scheme-relative: keep the current scheme, replace the authority.
+        new_url = f"{scheme}:{location}"
+    elif location.startswith("/"):
         new_url = f"{scheme}://{host}:{port}{location}"
     else:
-        new_url = location
+        # Absolute URL, relative path, or query-only target.
+        new_url = urljoin(url, location)
     new_method = method
     new_body = body
     if status == 303 or (status in (301, 302) and method == "POST"):
@@ -2000,6 +2368,7 @@ def _compute_redirect(
         new_body = None
         req_headers.pop("Content-Type", None)
         req_headers.pop("Content-Length", None)
+    _strip_redirect_credentials(req_headers, url, new_url)
     return new_url, new_method, new_body
 
 
@@ -2013,24 +2382,197 @@ def _should_attempt_digest(
     status: int,
     resp_headers: dict[str, str],
     digest_attempted: bool,
+    same_origin: bool,
 ) -> bool:
-    """Return True if a Digest auth retry should be attempted."""
+    """Return True if a Digest auth retry should be attempted.
+
+    Args:
+        auth_obj: Configured auth object.
+        status: Response status code.
+        resp_headers: Response headers.
+        digest_attempted: Whether this request already answered a Digest
+            challenge.
+        same_origin: Whether the request still targets the origin the
+            credentials were configured for.  A cross-origin redirect clears
+            this for the rest of the chain, so the new origin cannot harvest
+            the credentials with a 401 challenge.
+    """
     return (
-        isinstance(auth_obj, DigestAuth)
+        same_origin
+        and isinstance(auth_obj, DigestAuth)
         and status == 401
         and not digest_attempted
         and resp_headers.get("www-authenticate", "").lower().startswith("digest")
     )
 
 
+# Contexts are safe to share between connections; a fresh SSLObject is
+# created per connection.  The key includes the CA path and the file's
+# identity, so a bundle rotated in place is picked up on the next call.
+_SSLContextKey = tuple[bool, str, str, str, str, int, int, int, int]
+_SSL_CONTEXT_CACHE: dict[_SSLContextKey, ssl.SSLContext] = {}
+_SSL_CONTEXT_LOCK = threading.Lock()
+
+
+def _path_state(path: str) -> tuple[int, int]:
+    """Return ``(mtime_ns, size)`` for a CA file or directory.
+
+    ``SSL_CERT_DIR`` is a path list on OpenSSL, so every entry is
+    combined.  A missing path contributes zeros.
+    """
+    if not path:
+        return (0, 0)
+    mtimes: list[int] = []
+    total_size = 0
+    for entry in path.split(os.pathsep):
+        try:
+            state = os.stat(entry)
+        except OSError:
+            continue
+        mtimes.append(state.st_mtime_ns)
+        total_size += state.st_size
+    return (max(mtimes) if mtimes else 0, total_size)
+
+
+def _ssl_context_key(verify: bool) -> _SSLContextKey:
+    """Return the cache key for an SSL context.
+
+    The CA path is resolved the same way ``ssl.create_default_context()``
+    resolves it.  The mtime and size of the resolved file or directory are
+    part of the key, so a bundle rotated in place invalidates the cache.
+    """
+    env_file = os.environ.get("SSL_CERT_FILE", "")
+    env_dir = os.environ.get("SSL_CERT_DIR", "")
+    defaults = ssl.get_default_verify_paths()
+    cert_file = defaults.cafile or env_file
+    cert_dir = defaults.capath or env_dir
+    file_mtime, file_size = _path_state(cert_file)
+    dir_mtime, dir_size = _path_state(cert_dir)
+    return (
+        verify,
+        env_file,
+        env_dir,
+        cert_file,
+        cert_dir,
+        file_mtime,
+        file_size,
+        dir_mtime,
+        dir_size,
+    )
+
+
 def _make_ssl_context(verify: bool) -> ssl.SSLContext:
-    """Create an SSL context based on verification setting."""
-    if verify:
-        return ssl.create_default_context()
-    return ssl._create_unverified_context()
+    """Return a cached SSL context for the verification setting."""
+    key = _ssl_context_key(verify)
+    with _SSL_CONTEXT_LOCK:
+        context = _SSL_CONTEXT_CACHE.get(key)
+        if context is None:
+            if verify:
+                context = ssl.create_default_context()
+            else:
+                context = ssl._create_unverified_context()
+            _SSL_CONTEXT_CACHE[key] = context
+        return context
 
 
 # -- Sync transport helpers --
+
+
+def _connect_to_addresses(
+    addresses: Sequence[str],
+    port: int,
+    timeout: float,
+    source_address: tuple[str, int] | None = None,
+) -> socket.socket:
+    """Connect to the first reachable address in *addresses*.
+
+    The addresses are tried in order.  Each attempt uses its own ``timeout``
+    budget, so a caller that pins several unreachable addresses can wait for
+    the sum of them.
+
+    Args:
+        addresses: Validated addresses to try, in order.
+        port: Destination port from the URL.
+        timeout: Connect timeout per attempt.
+        source_address: Optional local address, for ``http.client`` parity.
+
+    Returns:
+        A connected socket.
+
+    Raises:
+        OSError: The last connect error, when every address failed.
+    """
+    last_error: OSError | None = None
+    for address in addresses:
+        try:
+            return socket.create_connection((address, port), timeout, source_address)
+        except OSError as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """``HTTPConnection`` that connects to caller-supplied addresses.
+
+    ``host`` stays the URL host, so the ``Host`` header is unchanged; only
+    the TCP peer comes from the pinned list.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        addresses: Sequence[str],
+        timeout: float,
+    ) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_addresses = addresses
+        self._create_connection = self._create_pinned_connection
+
+    def _create_pinned_connection(
+        self,
+        address: tuple[str, int],
+        timeout: float,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        """Replace ``socket.create_connection`` for this connection."""
+        return _connect_to_addresses(
+            self._pinned_addresses, address[1], timeout, source_address
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """``HTTPSConnection`` that connects to caller-supplied addresses.
+
+    ``host`` stays the URL host, so TLS SNI and certificate verification use
+    it even though the TCP peer is pinned.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        addresses: Sequence[str],
+        timeout: float,
+        context: ssl.SSLContext | None = None,
+    ) -> None:
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_addresses = addresses
+        self._create_connection = self._create_pinned_connection
+
+    def _create_pinned_connection(
+        self,
+        address: tuple[str, int],
+        timeout: float,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        """Replace ``socket.create_connection`` for this connection."""
+        return _connect_to_addresses(
+            self._pinned_addresses, address[1], timeout, source_address
+        )
 
 
 def _sync_connect_via_proxy(
@@ -2132,14 +2674,34 @@ def _sync_acquire_connection(
     _pool: _SyncConnectionPool | None,
     req_headers: dict[str, str],
     url: str,
+    resolve_to: tuple[str, ...] | None = None,
 ) -> tuple[http.client.HTTPConnection, str, bool]:
     """Acquire a sync HTTP connection via proxy, pool, or direct creation.
+
+    Args:
+        host: URL host, used for ``Host``, SNI and certificate verification.
+        port: URL port.
+        path: Request path.
+        is_https: Whether the request uses TLS.
+        timeout: Connect and socket timeout.
+        verify: Whether to verify TLS certificates.
+        proxy: Proxy URL, or ``None``.
+        _pool: Connection pool, or ``None``.
+        req_headers: Request headers, updated for keep-alive.
+        url: Full request URL, used for proxied requests.
+        resolve_to: Pinned addresses, or ``None``.
 
     Returns:
         (connection, request_path, reused) -- *reused* is True when the
         connection came from the pool and may therefore be stale.
+
+    Raises:
+        ValueError: If *resolve_to* is set together with *proxy*.  The
+            request loop rejects the combination earlier; this keeps the
+            helper safe on its own.
     """
     if proxy:
+        _reject_proxy_with_resolve_to(resolve_to, proxy)
         if _is_socks_proxy(proxy):
             return (
                 *_sync_connect_via_socks5(
@@ -2153,7 +2715,7 @@ def _sync_acquire_connection(
         return conn, request_path, False
 
     if _pool:
-        pooled_conn = _pool.acquire(host, port, is_https, timeout, verify)
+        pooled_conn = _pool.acquire(host, port, is_https, timeout, verify, resolve_to)
         if pooled_conn is not None:
             req_headers["Connection"] = "keep-alive"
             # ``http.client`` fixes the socket timeout when the connection is
@@ -2165,6 +2727,17 @@ def _sync_acquire_connection(
             return pooled_conn, path, True
 
     # Direct connection
+    if resolve_to is not None:
+        if is_https:
+            ctx = _make_ssl_context(verify)
+            conn = _PinnedHTTPSConnection(
+                host, port, addresses=resolve_to, timeout=timeout, context=ctx
+            )
+        else:
+            conn = _PinnedHTTPConnection(
+                host, port, addresses=resolve_to, timeout=timeout
+            )
+        return conn, path, False
     if is_https:
         ctx = _make_ssl_context(verify)
         conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
@@ -2212,6 +2785,7 @@ def _sync_release_or_close(
     conn: http.client.HTTPConnection,
     verify: bool = True,
     resp_version: int | None = None,
+    resolve_to: tuple[str, ...] | None = None,
 ) -> None:
     """Release a sync connection back to the pool or close it.
 
@@ -2232,9 +2806,73 @@ def _sync_release_or_close(
         and not stream
         and _response_is_persistent(resp_headers, resp_version)
     ):
-        _pool.release(host, port, is_https, conn, verify=verify)
+        _pool.release(host, port, is_https, conn, verify=verify, resolve_to=resolve_to)
     else:
         conn.close()
+
+
+#: Bytes requested per read when a response body has no known length.
+_RESPONSE_READ_CHUNK = 64 * 1024
+
+
+def _validate_max_response_size(max_response_size: int | None) -> None:
+    """Reject an unusable response-size cap before any I/O starts.
+
+    ``None`` means "no limit".  Zero and negative values are refused: a
+    negative cap would make the bounded reads degrade to ``read(0)`` and the
+    decompression probe to zlib's "no limit", so it must never reach them.
+
+    Raises:
+        ValueError: If *max_response_size* is not positive.
+    """
+    if max_response_size is not None and max_response_size <= 0:
+        raise ValueError(
+            "max_response_size must be a positive integer or None, "
+            f"got {max_response_size!r}"
+        )
+
+
+def _sync_read_capped(
+    resp: http.client.HTTPResponse,
+    url: str,
+    max_size: int | None,
+) -> bytes:
+    """Read a sync response body, refusing more than *max_size* bytes.
+
+    A declared ``Content-Length`` above the limit is refused before any body
+    byte is read.  A chunked or EOF-delimited body is read in bounded pieces
+    and refused as soon as the accumulated bytes cross the limit.
+
+    Args:
+        resp: The response to read.
+        url: Response URL, used in the size error.
+        max_size: The limit in bytes, or ``None`` for no limit.
+
+    Returns:
+        The response body.
+
+    Raises:
+        ResponseTooLargeError: If the body exceeds *max_size*.  The caller
+            closes the connection; it cannot be reused with an unread body.
+    """
+    if max_size is None:
+        return resp.read()
+
+    declared = resp.length
+    if declared is not None and declared > max_size:
+        raise ResponseTooLargeError(url, max_size, declared=declared)
+
+    chunks: list[bytes] = []
+    received = 0
+    while True:
+        chunk = resp.read(min(_RESPONSE_READ_CHUNK, max_size - received + 1))
+        if not chunk:
+            break
+        received += len(chunk)
+        if received > max_size:
+            raise ResponseTooLargeError(url, max_size, received=received)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _build_sync_response(
@@ -2248,8 +2886,12 @@ def _build_sync_response(
     raw_set_cookies: list[str] | None = None,
     on_timing: TimingHook | None = None,
     timing_start: float = 0.0,
+    max_response_size: int | None = None,
 ) -> tuple[Response | StreamingResponse, bool]:
     """Build a final sync response (streaming or buffered).
+
+    ``max_response_size`` bounds the buffered body; a ``stream=True``
+    response is not buffered and is therefore not limited.
 
     Returns:
         (response, close_conn) -- close_conn is False when streaming.
@@ -2269,10 +2911,18 @@ def _build_sync_response(
             expect_body=_response_has_body(method, status),
         ), False
 
-    resp_body = resp.read()
+    resp_body = _sync_read_capped(resp, url, max_response_size)
     _emit_timing(on_timing, timing_start, "body_complete")
-    if content_encoding:
-        resp_body = _decompress_body(resp_body, content_encoding)
+    # HEAD, 204 and 304 have no body; a Content-Encoding header describes the
+    # representation, not bytes that are present, so decompressing would
+    # report a truncated stream.
+    if content_encoding and _response_has_body(method, status):
+        resp_body = _decompress_body(
+            resp_body,
+            content_encoding,
+            max_size=max_response_size,
+            url=url,
+        )
     return Response(
         status,
         resp_headers,
@@ -2288,9 +2938,22 @@ def _wrap_sync_errors(
     port: int,
     url: str,
     timeout: float,
+    pinned: Sequence[str] | None = None,
 ) -> HttpClientError:
-    """Translate low-level sync exceptions into httpclient exceptions."""
-    if isinstance(exc, (HttpTimeoutError, HttpConnectionError, TooManyRedirects)):
+    """Translate low-level sync exceptions into httpclient exceptions.
+
+    ``pinned`` is redacted from the message: the caller supplied those
+    addresses, and a transport error is not the place to repeat them.
+    """
+    if isinstance(
+        exc,
+        (
+            HttpTimeoutError,
+            HttpConnectionError,
+            TooManyRedirects,
+            ResponseTooLargeError,
+        ),
+    ):
         return exc
     if isinstance(exc, _TRANSPORT_TIMEOUTS):
         return HttpTimeoutError(
@@ -2299,8 +2962,9 @@ def _wrap_sync_errors(
             timeout=timeout,
         )
     if isinstance(exc, (OSError, http.client.HTTPException)):
+        detail = _redact_pinned(str(exc), pinned, host)
         return HttpConnectionError(
-            f"Connection to {host}:{port} failed: {exc}",
+            f"Connection to {host}:{port} failed: {detail}",
             host=host,
             port=port,
         )
@@ -2324,15 +2988,27 @@ def _sync_request(
     params: dict[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    follow_redirects: bool = True,
     verify: bool = True,
     stream: bool = False,
     auth: tuple[str, str] | Auth | None = None,
     proxy: str | None = None,
+    resolve_to: ResolveTo = None,
     cookies: dict[str, str] | None = None,
     on_timing: TimingHook | None = None,
+    max_response_size: int | None = None,
     _pool: _SyncConnectionPool | None = _DEFAULT_SYNC_POOL,
 ) -> Response | StreamingResponse:
     """Perform a synchronous HTTP request.
+
+    ``resolve_to`` connects to the caller-supplied IP address (or addresses,
+    in order) while the URL host still provides ``Host``, TLS SNI and
+    certificate verification.  The caller is responsible for choosing the
+    addresses; this module does not re-check the policy.  An entry that is
+    not an IP literal raises ``ValueError``.  It cannot be combined
+    with ``proxy``: the proxy resolves the name, so the pin is unenforceable.
+    A redirect that changes scheme, host or port drops the pin for the rest
+    of the chain.
 
     Phase structure (mirrors _async_request):
         1-3. Request preparation (URL, body, headers, auth)
@@ -2341,7 +3017,13 @@ def _sync_request(
            b. Send request + read response
            c. Handle redirects / digest auth / response construction
            d. Connection lifecycle (pool release or close)
+
+    With ``follow_redirects=False`` a 3xx is returned like any other
+    response instead of being followed, so the caller can read ``Location``
+    and validate the next hop.  The decision is taken after a Digest-auth
+    retry as well, and it applies to ``stream=True`` responses.
     """
+    _validate_max_response_size(max_response_size)
     timing_start = time.perf_counter()
     if on_timing is not None:
         on_timing("request_started", 0.0)
@@ -2349,6 +3031,15 @@ def _sync_request(
         method, url, headers, data, json, files, params, auth, cookies
     )
 
+    _reject_proxy_with_resolve_to(resolve_to, proxy)
+    pinned = _normalize_resolve_to(resolve_to)
+    pinned_origin: tuple[str, str, int] | None = None
+    if pinned is not None:
+        scheme0, host0, port0, _, _ = _parse_url(url)
+        pinned_origin = (scheme0, host0, port0)
+
+    credential_origin = _origin(url)
+    same_origin = True
     redirects = 0
     _digest_attempted = False
     retried = False
@@ -2356,6 +3047,11 @@ def _sync_request(
     accumulated_set_cookies: list[str] = []
     while True:
         scheme, host, port, path, is_https = _parse_url(url)
+        # A redirect that changes origin must not pin the new host to the
+        # address validated for the old one.  Stay dropped for the chain,
+        # like the credential rule.
+        if pinned is not None and (scheme, host, port) != pinned_origin:
+            pinned = None
         close_conn = True
         completed = False
         resp_version: int | None = None
@@ -2372,6 +3068,7 @@ def _sync_request(
                 pool,
                 req_headers,
                 url,
+                pinned,
             )
             if pool and not proxy:
                 req_headers.setdefault("Connection", "keep-alive")
@@ -2410,8 +3107,8 @@ def _sync_request(
                 resp_headers = CaseInsensitiveDict(raw_headers)
                 status = resp.status
 
-                if _is_redirect(status, resp_headers):
-                    resp.read()
+                if follow_redirects and _is_redirect(status, resp_headers):
+                    _sync_read_capped(resp, url, max_response_size)
                     completed = True
                     url, method, body = _compute_redirect(
                         status,
@@ -2426,13 +3123,14 @@ def _sync_request(
                         redirects,
                         max_redirects,
                     )
+                    same_origin = same_origin and _origin(url) == credential_origin
                     redirects += 1
                     continue
 
                 if _should_attempt_digest(
-                    auth_obj, status, resp_headers, _digest_attempted
+                    auth_obj, status, resp_headers, _digest_attempted, same_origin
                 ):
-                    resp.read()
+                    _sync_read_capped(resp, url, max_response_size)
                     www_auth = resp_headers["www-authenticate"]
                     req_headers.update(
                         auth_obj.auth_headers_from_challenge(method, path, www_auth)
@@ -2452,6 +3150,7 @@ def _sync_request(
                     raw_set_cookies=accumulated_set_cookies,
                     on_timing=on_timing,
                     timing_start=timing_start,
+                    max_response_size=max_response_size,
                 )
                 completed = True
                 return result
@@ -2460,21 +3159,29 @@ def _sync_request(
                 # is safe to reuse: after a mid-body failure http.client still
                 # believes a response is pending, so the next caller would fail
                 # inside ``request()``.
-                _sync_release_or_close(
-                    close_conn and completed,
-                    _pool,
-                    proxy,
-                    stream,
-                    resp_headers,
-                    host,
-                    port,
-                    is_https,
-                    conn,
-                    verify,
-                    resp_version,
-                )
+                if completed:
+                    _sync_release_or_close(
+                        close_conn and completed,
+                        _pool,
+                        proxy,
+                        stream,
+                        resp_headers,
+                        host,
+                        port,
+                        is_https,
+                        conn,
+                        verify,
+                        resp_version,
+                        pinned,
+                    )
+                elif close_conn:
+                    # The body was not fully read (an error, or a
+                    # ResponseTooLargeError).  Close now rather than leaving
+                    # the socket to the garbage collector; a caller that
+                    # keeps the exception would keep the fd alive.
+                    conn.close()
         except Exception as exc:
-            wrapped = _wrap_sync_errors(exc, host, port, url, timeout)
+            wrapped = _wrap_sync_errors(exc, host, port, url, timeout, pinned)
             if wrapped is exc:
                 raise
             raise wrapped from exc
@@ -2527,9 +3234,20 @@ async def _async_read_response_headers(
 async def _async_read_chunked_body(
     reader: asyncio.StreamReader,
     timeout: float,
+    *,
+    url: str = "",
+    max_size: int | None = None,
 ) -> bytes:
-    """Read a chunked transfer-encoded body from an asyncio StreamReader."""
+    """Read a chunked transfer-encoded body from an asyncio StreamReader.
+
+    With *max_size*, a chunk that would push the accumulated body over the
+    limit is refused before its payload is read.
+
+    Raises:
+        ResponseTooLargeError: If the body exceeds *max_size*.
+    """
     parts: list[bytes] = []
+    received = 0
     while True:
         size_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
         size_str = size_line.decode("latin-1").split(";")[0].strip()
@@ -2539,8 +3257,11 @@ async def _async_read_chunked_body(
         if chunk_size == 0:
             await asyncio.wait_for(reader.readline(), timeout=timeout)  # trailing \r\n
             break
+        if max_size is not None and received + chunk_size > max_size:
+            raise ResponseTooLargeError(url, max_size, received=received + chunk_size)
         data = await asyncio.wait_for(reader.readexactly(chunk_size), timeout=timeout)
         await asyncio.wait_for(reader.readline(), timeout=timeout)  # trailing \r\n
+        received += len(data)
         parts.append(data)
     return b"".join(parts)
 
@@ -2549,24 +3270,54 @@ async def _async_read_body(
     reader: asyncio.StreamReader,
     headers: dict[str, str],
     timeout: float,
+    *,
+    url: str = "",
+    max_size: int | None = None,
 ) -> bytes:
     """Read the response body based on Content-Length or Transfer-Encoding.
 
-    Falls back to reading until EOF when neither header is present.
+    Falls back to reading until EOF when neither header is present.  With
+    *max_size*, a declared length above the limit is refused before reading,
+    and an undeclared body is read in bounded pieces until it crosses the
+    limit.
+
+    Raises:
+        ResponseTooLargeError: If the body exceeds *max_size*.
     """
     te = headers.get("transfer-encoding", "")
     if te.lower() == "chunked":
-        return await _async_read_chunked_body(reader, timeout)
+        return await _async_read_chunked_body(
+            reader, timeout, url=url, max_size=max_size
+        )
 
     cl = headers.get("content-length")
     if cl is not None:
         length = int(cl)
+        if max_size is not None and length > max_size:
+            raise ResponseTooLargeError(url, max_size, declared=length)
         if length == 0:
             return b""
         return await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
 
-    # No Content-Length, no chunked -- read until EOF
-    return await asyncio.wait_for(reader.read(), timeout=timeout)
+    if max_size is None:
+        # No Content-Length, no chunked -- read until EOF
+        return await asyncio.wait_for(reader.read(), timeout=timeout)
+
+    # No Content-Length, no chunked -- read until EOF, bounded.
+    chunks: list[bytes] = []
+    received = 0
+    while True:
+        chunk = await asyncio.wait_for(
+            reader.read(min(_RESPONSE_READ_CHUNK, max_size - received + 1)),
+            timeout=timeout,
+        )
+        if not chunk:
+            break
+        received += len(chunk)
+        if received > max_size:
+            raise ResponseTooLargeError(url, max_size, received=received)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # -- Async connection helpers --
@@ -2687,6 +3438,54 @@ async def _async_connect_via_socks5(
     return reader, writer
 
 
+async def _async_open_pinned(
+    addresses: Sequence[str],
+    port: int,
+    timeout: float,
+    ssl_context: ssl.SSLContext | None,
+    server_hostname: str,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open a connection to the first reachable pinned address.
+
+    ``server_hostname`` is the URL host passed verbatim from
+    :func:`_parse_url`: it is used for TLS SNI and certificate verification
+    even though the TCP peer comes from *addresses*.  Passing it explicitly
+    is required, because asyncio would otherwise verify the pinned IP.
+
+    Args:
+        addresses: Validated addresses to try, in order.
+        port: Destination port from the URL.
+        timeout: Connect timeout per attempt.
+        ssl_context: TLS context for HTTPS, or ``None`` for plain HTTP.
+        server_hostname: URL host for SNI and verification.
+
+    Returns:
+        A connected (reader, writer) pair.
+
+    Raises:
+        OSError: The last connect error, when every address failed.
+        asyncio.TimeoutError: The last attempt timed out.
+    """
+    last_error: BaseException | None = None
+    for address in addresses:
+        try:
+            return await asyncio.wait_for(
+                asyncio.open_connection(
+                    address,
+                    port,
+                    ssl=ssl_context,
+                    server_hostname=(
+                        server_hostname if ssl_context is not None else None
+                    ),
+                ),
+                timeout=timeout,
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
 async def _async_acquire_connection(
     host: str,
     port: int,
@@ -2698,17 +3497,35 @@ async def _async_acquire_connection(
     _pool: _AsyncConnectionPool | None,
     req_headers: dict[str, str],
     url: str,
+    resolve_to: tuple[str, ...] | None = None,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str, bool]:
     """Acquire an async connection via proxy, pool, or direct creation.
 
     Wraps connection errors into HttpConnectionError / HttpTimeoutError.
 
+    Args:
+        host: URL host, used for ``Host``, SNI and certificate verification.
+        port: URL port.
+        path: Request path.
+        is_https: Whether the request uses TLS.
+        timeout: Connect timeout.
+        verify: Whether to verify TLS certificates.
+        proxy: Proxy URL, or ``None``.
+        _pool: Connection pool, or ``None``.
+        req_headers: Request headers, updated for keep-alive.
+        url: Full request URL, used for proxied requests.
+        resolve_to: Pinned addresses, or ``None``.
+
     Returns:
         (reader, writer, request_path, reused) -- *reused* is True when the
         connection came from the pool and may therefore be stale.
+
+    Raises:
+        ValueError: If *resolve_to* is set together with *proxy*.
     """
     try:
         if proxy:
+            _reject_proxy_with_resolve_to(resolve_to, proxy)
             if _is_socks_proxy(proxy):
                 reader, writer = await _async_connect_via_socks5(
                     host, port, timeout, verify, is_https, proxy
@@ -2731,7 +3548,9 @@ async def _async_acquire_connection(
             return reader, writer, path, False
 
         if _pool:
-            result = await _pool.acquire(host, port, is_https, timeout, verify)
+            result = await _pool.acquire(
+                host, port, is_https, timeout, verify, resolve_to
+            )
             if result is not None:
                 reader, writer = result
                 req_headers["Connection"] = "keep-alive"
@@ -2739,17 +3558,23 @@ async def _async_acquire_connection(
 
         # Direct connection
         ctx = _make_ssl_context(verify) if is_https else None
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=ctx),
-            timeout=timeout,
-        )
+        if resolve_to is not None:
+            reader, writer = await _async_open_pinned(
+                resolve_to, port, timeout, ctx, host
+            )
+        else:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, ssl=ctx),
+                timeout=timeout,
+            )
         return reader, writer, path, False
     except asyncio.TimeoutError:
         msg = f"Connection to {host}:{port} timed out after {timeout}s"
         raise HttpTimeoutError(msg, url=url, timeout=timeout)
     except OSError as exc:
+        detail = _redact_pinned(str(exc), resolve_to, host)
         raise HttpConnectionError(
-            f"Connection to {host}:{port} failed: {exc}",
+            f"Connection to {host}:{port} failed: {detail}",
             host=host,
             port=port,
         ) from exc
@@ -2801,6 +3626,7 @@ async def _async_release_or_close(
     writer: asyncio.StreamWriter,
     verify: bool = True,
     resp_version: int | None = None,
+    resolve_to: tuple[str, ...] | None = None,
 ) -> None:
     """Release an async connection back to the pool or close it.
 
@@ -2821,7 +3647,9 @@ async def _async_release_or_close(
         and not stream
         and _response_is_persistent(resp_headers, resp_version)
     ):
-        await _pool.release(host, port, is_https, reader, writer, verify=verify)
+        await _pool.release(
+            host, port, is_https, reader, writer, verify=verify, resolve_to=resolve_to
+        )
     else:
         writer.close()
         # Tier 3: best-effort silent -- wait_closed on direct close
@@ -2889,15 +3717,27 @@ async def _async_request(
     params: dict[str, Any] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    follow_redirects: bool = True,
     verify: bool = True,
     stream: bool = False,
     auth: tuple[str, str] | Auth | None = None,
     proxy: str | None = None,
+    resolve_to: ResolveTo = None,
     cookies: dict[str, str] | None = None,
     on_timing: TimingHook | None = None,
+    max_response_size: int | None = None,
     _pool: _AsyncConnectionPool | None = None,
 ) -> Response | StreamingResponse:
     """Perform an asynchronous HTTP request using asyncio streams.
+
+    ``resolve_to`` connects to the caller-supplied IP address (or addresses,
+    in order) while the URL host still provides ``Host``, TLS SNI and
+    certificate verification.  The caller is responsible for choosing the
+    addresses; this module does not re-check the policy.  An entry that is
+    not an IP literal raises ``ValueError``.  It cannot be combined
+    with ``proxy``: the proxy resolves the name, so the pin is unenforceable.
+    A redirect that changes scheme, host or port drops the pin for the rest
+    of the chain.
 
     Phase structure (mirrors _sync_request):
         1-3. Request preparation (URL, body, headers, auth)
@@ -2906,7 +3746,13 @@ async def _async_request(
            b. Send raw HTTP/1.1 request + read response headers
            c. Handle redirects / digest auth / response construction
            d. Connection lifecycle (pool release or close)
+
+    With ``follow_redirects=False`` a 3xx is returned like any other
+    response instead of being followed, so the caller can read ``Location``
+    and validate the next hop.  The decision is taken after a Digest-auth
+    retry as well, and it applies to ``stream=True`` responses.
     """
+    _validate_max_response_size(max_response_size)
     timing_start = time.perf_counter()
     if on_timing is not None:
         on_timing("request_started", 0.0)
@@ -2914,6 +3760,15 @@ async def _async_request(
         method, url, headers, data, json, files, params, auth, cookies
     )
 
+    _reject_proxy_with_resolve_to(resolve_to, proxy)
+    pinned = _normalize_resolve_to(resolve_to)
+    pinned_origin: tuple[str, str, int] | None = None
+    if pinned is not None:
+        scheme0, host0, port0, _, _ = _parse_url(url)
+        pinned_origin = (scheme0, host0, port0)
+
+    credential_origin = _origin(url)
+    same_origin = True
     redirects = 0
     _digest_attempted = False
     retried = False
@@ -2921,9 +3776,24 @@ async def _async_request(
     accumulated_set_cookies: list[str] = []
     while True:
         scheme, host, port, path, is_https = _parse_url(url)
+        # A redirect that changes origin must not pin the new host to the
+        # address validated for the old one.  Stay dropped for the chain,
+        # like the credential rule.
+        if pinned is not None and (scheme, host, port) != pinned_origin:
+            pinned = None
 
         reader, writer, request_path, reused = await _async_acquire_connection(
-            host, port, path, is_https, timeout, verify, proxy, pool, req_headers, url
+            host,
+            port,
+            path,
+            is_https,
+            timeout,
+            verify,
+            proxy,
+            pool,
+            req_headers,
+            url,
+            pinned,
         )
         if pool and not proxy:
             req_headers.setdefault("Connection", "keep-alive")
@@ -2978,8 +3848,14 @@ async def _async_request(
                 continue
             accumulated_set_cookies.extend(iter_set_cookies)
 
-            if _is_redirect(status, resp_headers):
-                await _async_read_body(reader, resp_headers, timeout)
+            if follow_redirects and _is_redirect(status, resp_headers):
+                await _async_read_body(
+                    reader,
+                    resp_headers,
+                    timeout,
+                    url=url,
+                    max_size=max_response_size,
+                )
                 completed = True
                 url, method, body = _compute_redirect(
                     status,
@@ -2994,13 +3870,20 @@ async def _async_request(
                     redirects,
                     max_redirects,
                 )
+                same_origin = same_origin and _origin(url) == credential_origin
                 redirects += 1
                 continue
 
             if _should_attempt_digest(
-                auth_obj, status, resp_headers, _digest_attempted
+                auth_obj, status, resp_headers, _digest_attempted, same_origin
             ):
-                await _async_read_body(reader, resp_headers, timeout)
+                await _async_read_body(
+                    reader,
+                    resp_headers,
+                    timeout,
+                    url=url,
+                    max_size=max_response_size,
+                )
                 www_auth = resp_headers["www-authenticate"]
                 req_headers.update(
                     auth_obj.auth_headers_from_challenge(method, path, www_auth)
@@ -3026,10 +3909,22 @@ async def _async_request(
                 )
 
             content_encoding = resp_headers.get("content-encoding", "")
-            resp_body = await _async_read_body(reader, resp_headers, timeout)
+            has_body = _response_has_body(method, status)
+            resp_body = await _async_read_body(
+                reader,
+                resp_headers,
+                timeout,
+                url=url,
+                max_size=max_response_size if has_body else None,
+            )
             _emit_timing(on_timing, timing_start, "body_complete")
-            if content_encoding:
-                resp_body = _decompress_body(resp_body, content_encoding)
+            if content_encoding and has_body:
+                resp_body = _decompress_body(
+                    resp_body,
+                    content_encoding,
+                    max_size=max_response_size,
+                    url=url,
+                )
             completed = True
             return Response(
                 status,
@@ -3045,20 +3940,26 @@ async def _async_request(
                 timeout=timeout,
             )
         finally:
-            await _async_release_or_close(
-                close_writer and completed,
-                _pool,
-                proxy,
-                stream,
-                resp_headers,
-                host,
-                port,
-                is_https,
-                reader,
-                writer,
-                verify,
-                resp_version,
-            )
+            if completed:
+                await _async_release_or_close(
+                    close_writer and completed,
+                    _pool,
+                    proxy,
+                    stream,
+                    resp_headers,
+                    host,
+                    port,
+                    is_https,
+                    reader,
+                    writer,
+                    verify,
+                    resp_version,
+                    pinned,
+                )
+            elif close_writer:
+                # The body was not fully read; close the transport now
+                # instead of leaving it to the collector.
+                await _async_close_writer_silent(writer)
 
 
 # ── Request Building helpers (multipart, headers) ──
@@ -3307,6 +4208,26 @@ class Client:
     (e.g. an API client talking to one service).  For multi-origin
     scenarios, manage cookies per-domain yourself.
 
+    ``max_response_size`` caps a buffered response body; a body above the
+    cap raises :class:`ResponseTooLargeError`.  It must be a positive
+    integer or ``None``.  The default ``None`` keeps the historical
+    unbounded behaviour.  A ``stream=True`` response is not buffered and is
+    therefore not limited.
+
+    ``follow_redirects=False`` returns the first 3xx response unchanged
+    instead of following it, so the caller can read ``Location`` and
+    validate the next hop; unlike ``max_redirects=0``, the response is
+    returned rather than an exception.  A ``stream=True`` 3xx is unread --
+    drain or close it to return the connection to the pool.  The keyword is
+    also accepted per request.
+
+    ``resolve_to`` pins the TCP peer to a caller-validated IP address, or to
+    an ordered list of IP addresses tried until one connects, while the URL
+    host still provides ``Host``, TLS SNI and certificate verification.  The
+    caller chooses the addresses.  A hostname entry raises ``ValueError``
+    rather than being resolved.  It cannot be combined with ``proxy``: that
+    raises ``ValueError`` at construction.
+
     Usage::
 
         with Client(headers={"Authorization": "Bearer token"}) as c:
@@ -3320,20 +4241,28 @@ class Client:
         cookies: dict[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_redirects: int = DEFAULT_MAX_REDIRECTS,
+        follow_redirects: bool = True,
         verify: bool = True,
         auth: tuple[str, str] | Auth | None = None,
         proxy: str | None = None,
+        resolve_to: ResolveTo = None,
         pool_size: int = DEFAULT_POOL_SIZE,
         max_total_connections: int = DEFAULT_MAX_TOTAL_CONNECTIONS,
         pool_idle_timeout: float = DEFAULT_POOL_IDLE_TIMEOUT,
+        max_response_size: int | None = None,
     ) -> None:
         self._base_headers = headers or {}
         self._cookies: dict[str, str] = dict(cookies) if cookies else {}
         self._timeout = timeout
         self._max_redirects = max_redirects
+        self._follow_redirects = follow_redirects
         self._verify = verify
         self._auth = auth
         self._proxy = proxy
+        _reject_proxy_with_resolve_to(resolve_to, proxy)
+        self._resolve_to = _normalize_resolve_to(resolve_to)
+        _validate_max_response_size(max_response_size)
+        self._max_response_size = max_response_size
         self._pool = _SyncConnectionPool(
             pool_size, max_total_connections, pool_idle_timeout
         )
@@ -3352,9 +4281,12 @@ class Client:
         kwargs["cookies"] = merged_cookies or None
         kwargs.setdefault("timeout", self._timeout)
         kwargs.setdefault("max_redirects", self._max_redirects)
+        kwargs.setdefault("follow_redirects", self._follow_redirects)
         kwargs.setdefault("verify", self._verify)
         kwargs.setdefault("auth", self._auth)
         kwargs.setdefault("proxy", self._proxy)
+        kwargs.setdefault("resolve_to", self._resolve_to)
+        kwargs.setdefault("max_response_size", self._max_response_size)
         kwargs["_pool"] = self._pool
         kwargs["headers"] = _merge_headers(self._base_headers, kwargs.get("headers"))
         result = _sync_request(method, url, **kwargs)
@@ -3414,6 +4346,26 @@ class AsyncClient:
     (e.g. an API client talking to one service).  For multi-origin
     scenarios, manage cookies per-domain yourself.
 
+    ``max_response_size`` caps a buffered response body; a body above the
+    cap raises :class:`ResponseTooLargeError`.  It must be a positive
+    integer or ``None``.  The default ``None`` keeps the historical
+    unbounded behaviour.  A ``stream=True`` response is not buffered and is
+    therefore not limited.
+
+    ``follow_redirects=False`` returns the first 3xx response unchanged
+    instead of following it, so the caller can read ``Location`` and
+    validate the next hop; unlike ``max_redirects=0``, the response is
+    returned rather than an exception.  A ``stream=True`` 3xx is unread --
+    drain or close it to return the connection to the pool.  The keyword is
+    also accepted per request.
+
+    ``resolve_to`` pins the TCP peer to a caller-validated IP address, or to
+    an ordered list of IP addresses tried until one connects, while the URL
+    host still provides ``Host``, TLS SNI and certificate verification.  The
+    caller chooses the addresses.  A hostname entry raises ``ValueError``
+    rather than being resolved.  It cannot be combined with ``proxy``: that
+    raises ``ValueError`` at construction.
+
     Usage::
 
         async with AsyncClient(headers={"Authorization": "Bearer token"}) as c:
@@ -3427,20 +4379,28 @@ class AsyncClient:
         cookies: dict[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_redirects: int = DEFAULT_MAX_REDIRECTS,
+        follow_redirects: bool = True,
         verify: bool = True,
         auth: tuple[str, str] | Auth | None = None,
         proxy: str | None = None,
+        resolve_to: ResolveTo = None,
         pool_size: int = DEFAULT_POOL_SIZE,
         max_total_connections: int = DEFAULT_MAX_TOTAL_CONNECTIONS,
         pool_idle_timeout: float = DEFAULT_POOL_IDLE_TIMEOUT,
+        max_response_size: int | None = None,
     ) -> None:
         self._base_headers = headers or {}
         self._cookies: dict[str, str] = dict(cookies) if cookies else {}
         self._timeout = timeout
         self._max_redirects = max_redirects
+        self._follow_redirects = follow_redirects
         self._verify = verify
         self._auth = auth
         self._proxy = proxy
+        _reject_proxy_with_resolve_to(resolve_to, proxy)
+        self._resolve_to = _normalize_resolve_to(resolve_to)
+        _validate_max_response_size(max_response_size)
+        self._max_response_size = max_response_size
         self._pool = _AsyncConnectionPool(
             pool_size, max_total_connections, pool_idle_timeout
         )
@@ -3459,9 +4419,12 @@ class AsyncClient:
         kwargs["cookies"] = merged_cookies or None
         kwargs.setdefault("timeout", self._timeout)
         kwargs.setdefault("max_redirects", self._max_redirects)
+        kwargs.setdefault("follow_redirects", self._follow_redirects)
         kwargs.setdefault("verify", self._verify)
         kwargs.setdefault("auth", self._auth)
         kwargs.setdefault("proxy", self._proxy)
+        kwargs.setdefault("resolve_to", self._resolve_to)
+        kwargs.setdefault("max_response_size", self._max_response_size)
         kwargs["_pool"] = self._pool
         kwargs["headers"] = _merge_headers(self._base_headers, kwargs.get("headers"))
         result = await _async_request(method, url, **kwargs)
