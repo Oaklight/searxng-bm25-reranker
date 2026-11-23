@@ -26,34 +26,44 @@ jobs:
           python-version: "3.12"
 
       - name: Install zerodep CLI
-        run: pip install 'zerodep>=2026.9.9'
+        # The lock file needs 2026.10.23.1+. The guard script checks versions
+        # itself, so an older CLI still cannot downgrade a module.
+        run: pip install 'zerodep>=2026.10.23.1'
 
-      - name: Update vendored modules in both packages
+      - name: Inspect vendored modules
+        id: state
         run: |
-          for pkg in packages/bm25_reranker packages/sem_reranker; do
-            (cd "$pkg" && zerodep update --all)
-          done
+          python3 .github/scripts/zerodep_guard.py inspect \
+            "$RUNNER_TEMP/zerodep-plan.json" "$GITHUB_STEP_SUMMARY" \
+            packages/bm25_reranker \
+            packages/sem_reranker >> "$GITHUB_OUTPUT"
 
-      - name: Check for changes
-        id: changes
+      - name: Update safe modules
+        if: steps.state.outputs.has_updates == 'true'
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            git diff --stat >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 .github/scripts/zerodep_guard.py update \
+            "$RUNNER_TEMP/zerodep-plan.json"
+
+      - name: Verify nothing was downgraded
+        if: steps.state.outputs.has_updates == 'true'
+        run: |
+          python3 .github/scripts/zerodep_guard.py verify \
+            "$RUNNER_TEMP/zerodep-plan.json" "$GITHUB_STEP_SUMMARY"
 
       - name: Create or update Pull Request
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.state.outputs.has_updates == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           branch: zerodep-update
           delete-branch: true
           title: "chore(deps): update vendored zerodep modules"
           body: |
-            Automated update of vendored zerodep modules in both packages.
+            Automated update of vendored zerodep modules.
 
-            See the workflow step summary for the file list.
+            The workflow updates only modules whose locked version is not
+            newer than upstream. Modules it skipped, and modules whose content
+            changed without a version change, are listed below.
+
+            ${{ steps.state.outputs.modules }}
           labels: dependencies,zerodep
           commit-message: "chore(deps): update vendored zerodep modules"
